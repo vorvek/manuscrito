@@ -215,9 +215,9 @@ main :: proc() {
 
 	monitor := rl.GetCurrentMonitor()
 	monitor_pos := rl.GetMonitorPosition(monitor)
-	// ponytail: borderless fullscreen is an undecorated monitor-sized window; the
-	// +1 extra line keeps it 1px past the monitor so Windows' fullscreen
-	// optimizations don't promote it to exclusive fullscreen. Off-screen row is invisible.
+	// Borderless fullscreen is an undecorated monitor-sized window. The +1 extra line
+	// keeps it 1px past the monitor so Windows' fullscreen optimizations don't promote
+	// it to exclusive fullscreen. The off-screen row is invisible.
 	rl.SetWindowPosition(c.int(monitor_pos.x), c.int(monitor_pos.y))
 	rl.SetWindowSize(rl.GetMonitorWidth(monitor), rl.GetMonitorHeight(monitor) + 1)
 	when ODIN_OS == .Windows {
@@ -800,7 +800,7 @@ begin_typing_edit :: proc(app: ^App, ch: rune) {
 push_undo :: proc(app: ^App) {
 	append(&app.undo, current_snapshot(app))
 	clear_snapshots(&app.redo) // a fresh edit invalidates the redo history
-	// ponytail: cap the history at 200 full snapshots; docs are small, so this is plenty.
+	// Cap the history at 200 full snapshots. Documents are small, so this is plenty.
 	if len(app.undo) > 200 {
 		free_snapshot(app.undo[0])
 		ordered_remove(&app.undo, 0)
