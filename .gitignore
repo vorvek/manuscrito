@@ -1,0 +1,11 @@
+build/
+outputs/
+work/
+*.exe
+*.pdb
+*.ilk
+*.obj
+*.o
+*.so
+*.dylib
+*.dll
