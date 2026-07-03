@@ -16,7 +16,7 @@ odin build src -out:build/manuscrito
 
 Windows users can run `.\build.ps1`; Linux/macOS users can run `./build.sh`.
 
-## First controls
+## Controls
 
 - Type to write.
 - `Backspace` deletes.
