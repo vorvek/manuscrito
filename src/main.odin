@@ -2,7 +2,10 @@ package main
 
 import rl "vendor:raylib"
 import "core:c"
+import "core:fmt"
 import "core:os"
+import "core:path/filepath"
+import "core:slice"
 import "core:strconv"
 import "core:strings"
 import "core:unicode"
@@ -37,6 +40,8 @@ Command_Kind :: enum int {
 	Save,
 	Save_As,
 	Open,
+	Undo,
+	Redo,
 	Copy,
 	Cut,
 	Paste,
@@ -58,6 +63,22 @@ Command_Kind :: enum int {
 	Keep_Cursor_Centered,
 	Theme_Cycle,
 	Quit,
+}
+
+// Coalesces consecutive same-kind edits into one undo step; a boundary is forced
+// whenever the kind changes (see begin_edit) or the caret moves.
+Edit_Kind :: enum int {
+	Other,
+	Insert,
+	Delete,
+}
+
+Snapshot :: struct {
+	text:       []rune,
+	styles:     []Char_Style,
+	paragraphs: []Paragraph,
+	cursor:     int,
+	anchor:     int,
 }
 
 Style_Field :: enum int {
@@ -87,6 +108,7 @@ Theme :: struct {
 	border:      rl.Color,
 	accent:      rl.Color,
 	selection:   rl.Color,
+	page:        rl.Color,
 }
 
 Fonts :: struct {
@@ -116,8 +138,13 @@ App :: struct {
 	cursor:           int,
 	anchor:           int,
 	active_style:     Char_Style,
+	undo:             [dynamic]Snapshot,
+	redo:             [dynamic]Snapshot,
+	last_edit:        Edit_Kind,
 	palette_open:     bool,
 	palette_mode:     Palette_Mode,
+	palette_query:    [dynamic]rune,
+	recent:           [dynamic]Command_Kind,
 	selected_command: int,
 	path_action:      Path_Action,
 	path_input:       [dynamic]rune,
@@ -135,23 +162,29 @@ App :: struct {
 	fonts:            Fonts,
 }
 
+// Fields: name, background, foreground, muted, panel, border, accent, selection, page.
 THEMES := [?]Theme {
 	// Light
-	{"Paper",    rl.Color{248, 246, 239, 255}, rl.Color{31, 33, 36, 255},   rl.Color{130, 126, 116, 255}, rl.Color{255, 253, 247, 245}, rl.Color{205, 199, 188, 255}, rl.Color{41, 103, 92, 255},  rl.Color{191, 221, 214, 160}},
-	{"Sepia",    rl.Color{237, 224, 200, 255}, rl.Color{60, 44, 30, 255},   rl.Color{140, 120, 95, 255},  rl.Color{247, 236, 214, 245}, rl.Color{206, 188, 158, 255}, rl.Color{150, 90, 40, 255},  rl.Color{219, 197, 158, 160}},
-	{"Daylight", rl.Color{247, 249, 252, 255}, rl.Color{28, 34, 42, 255},   rl.Color{120, 132, 148, 255}, rl.Color{255, 255, 255, 245}, rl.Color{206, 214, 226, 255}, rl.Color{40, 110, 200, 255}, rl.Color{190, 214, 244, 160}},
-	{"Mint",     rl.Color{240, 247, 242, 255}, rl.Color{26, 40, 34, 255},   rl.Color{116, 140, 128, 255}, rl.Color{250, 255, 252, 245}, rl.Color{200, 220, 208, 255}, rl.Color{34, 130, 96, 255},  rl.Color{194, 226, 210, 160}},
+	{"Paper",    rl.Color{248, 246, 239, 255}, rl.Color{31, 33, 36, 255},   rl.Color{130, 126, 116, 255}, rl.Color{255, 253, 247, 245}, rl.Color{205, 199, 188, 255}, rl.Color{41, 103, 92, 255},  rl.Color{191, 221, 214, 160}, rl.Color{255, 254, 249, 255}},
+	{"Sepia",    rl.Color{237, 224, 200, 255}, rl.Color{60, 44, 30, 255},   rl.Color{140, 120, 95, 255},  rl.Color{247, 236, 214, 245}, rl.Color{206, 188, 158, 255}, rl.Color{150, 90, 40, 255},  rl.Color{219, 197, 158, 160}, rl.Color{247, 237, 217, 255}},
+	{"Daylight", rl.Color{247, 249, 252, 255}, rl.Color{28, 34, 42, 255},   rl.Color{120, 132, 148, 255}, rl.Color{255, 255, 255, 245}, rl.Color{206, 214, 226, 255}, rl.Color{40, 110, 200, 255}, rl.Color{190, 214, 244, 160}, rl.Color{255, 255, 255, 255}},
+	{"Mint",     rl.Color{240, 247, 242, 255}, rl.Color{26, 40, 34, 255},   rl.Color{116, 140, 128, 255}, rl.Color{250, 255, 252, 245}, rl.Color{200, 220, 208, 255}, rl.Color{34, 130, 96, 255},  rl.Color{194, 226, 210, 160}, rl.Color{250, 255, 252, 255}},
 	// Dark
-	{"Night",    rl.Color{19, 22, 26, 255},    rl.Color{229, 231, 235, 255}, rl.Color{137, 146, 158, 255}, rl.Color{31, 36, 42, 245},   rl.Color{73, 84, 96, 255},    rl.Color{122, 178, 255, 255}, rl.Color{52, 88, 134, 170}},
-	{"Nord",     rl.Color{46, 52, 64, 255},    rl.Color{216, 222, 233, 255}, rl.Color{136, 146, 167, 255}, rl.Color{59, 66, 82, 245},   rl.Color{76, 86, 106, 255},   rl.Color{136, 192, 208, 255}, rl.Color{67, 76, 94, 180}},
-	{"Dracula",  rl.Color{40, 42, 54, 255},    rl.Color{248, 248, 242, 255}, rl.Color{140, 144, 160, 255}, rl.Color{54, 57, 74, 245},   rl.Color{68, 71, 90, 255},    rl.Color{189, 147, 249, 255}, rl.Color{68, 71, 110, 180}},
-	{"Gruvbox",  rl.Color{40, 40, 40, 255},    rl.Color{235, 219, 178, 255}, rl.Color{168, 153, 132, 255}, rl.Color{60, 56, 54, 245},   rl.Color{80, 73, 69, 255},    rl.Color{215, 153, 33, 255},  rl.Color{80, 73, 69, 180}},
+	{"Night",    rl.Color{19, 22, 26, 255},    rl.Color{229, 231, 235, 255}, rl.Color{137, 146, 158, 255}, rl.Color{31, 36, 42, 245},   rl.Color{73, 84, 96, 255},    rl.Color{122, 178, 255, 255}, rl.Color{52, 88, 134, 170},  rl.Color{27, 31, 37, 255}},
+	{"Nord",     rl.Color{46, 52, 64, 255},    rl.Color{216, 222, 233, 255}, rl.Color{136, 146, 167, 255}, rl.Color{59, 66, 82, 245},   rl.Color{76, 86, 106, 255},   rl.Color{136, 192, 208, 255}, rl.Color{67, 76, 94, 180},   rl.Color{56, 63, 77, 255}},
+	{"Dracula",  rl.Color{40, 42, 54, 255},    rl.Color{248, 248, 242, 255}, rl.Color{140, 144, 160, 255}, rl.Color{54, 57, 74, 245},   rl.Color{68, 71, 90, 255},    rl.Color{189, 147, 249, 255}, rl.Color{68, 71, 110, 180},  rl.Color{52, 55, 70, 255}},
+	{"Gruvbox",  rl.Color{40, 40, 40, 255},    rl.Color{235, 219, 178, 255}, rl.Color{168, 153, 132, 255}, rl.Color{60, 56, 54, 245},   rl.Color{80, 73, 69, 255},    rl.Color{215, 153, 33, 255},  rl.Color{80, 73, 69, 180},   rl.Color{50, 48, 46, 255}},
+	// High contrast
+	{"Contrast Dark",  rl.Color{0, 0, 0, 255},       rl.Color{255, 255, 255, 255}, rl.Color{180, 180, 180, 255}, rl.Color{16, 16, 16, 255},    rl.Color{140, 140, 140, 255}, rl.Color{255, 234, 0, 255},   rl.Color{0, 90, 200, 220},   rl.Color{16, 16, 16, 255}},
+	{"Contrast Light", rl.Color{255, 255, 255, 255}, rl.Color{0, 0, 0, 255},       rl.Color{80, 80, 80, 255},    rl.Color{245, 245, 245, 255}, rl.Color{60, 60, 60, 255},    rl.Color{0, 40, 200, 255},    rl.Color{150, 190, 255, 200}, rl.Color{248, 248, 248, 255}},
 }
 
 COMMANDS := [?]Command {
 	{"Save", .Save},
 	{"Save As...", .Save_As},
 	{"Open...", .Open},
+	{"Undo", .Undo},
+	{"Redo", .Redo},
 	{"Copy", .Copy},
 	{"Cut", .Cut},
 	{"Paste", .Paste},
@@ -208,6 +241,7 @@ main :: proc() {
 	}
 	app.splash_loaded = rl.IsTextureValid(app.splash)
 	append(&app.paragraphs, Paragraph{})
+	load_settings(&app)
 	defer {
 		if app.splash_loaded {
 			rl.UnloadTexture(app.splash)
@@ -217,11 +251,22 @@ main :: proc() {
 		delete(app.styles)
 		delete(app.paragraphs)
 		delete(app.path_input)
+		for snap in app.undo {
+			free_snapshot(snap)
+		}
+		delete(app.undo)
+		for snap in app.redo {
+			free_snapshot(snap)
+		}
+		delete(app.redo)
+		delete(app.palette_query)
+		delete(app.recent)
 	}
 
 	for !app.quit && !rl.WindowShouldClose() {
 		update(&app)
 		draw(&app)
+		free_all(context.temp_allocator)
 	}
 }
 
@@ -298,8 +343,11 @@ update :: proc(app: ^App) {
 	}
 
 	if ctrl_down() && rl.IsKeyPressed(.P) {
-		app.palette_open = !app.palette_open
-		app.palette_mode = .Commands
+		if app.palette_open {
+			app.palette_open = false
+		} else {
+			open_command_palette(app)
+		}
 		return
 	}
 
@@ -338,6 +386,10 @@ handle_shortcuts :: proc(app: ^App) -> bool {
 	}
 	if rl.IsKeyPressed(.O) {
 		execute_command(app, .Open)
+		return true
+	}
+	if rl.IsKeyPressed(.Z) {
+		execute_command(app, .Redo if shift_down() else .Undo)
 		return true
 	}
 	if rl.IsKeyPressed(.C) {
@@ -398,18 +450,19 @@ handle_movement :: proc(app: ^App) {
 
 handle_editing :: proc(app: ^App) {
 	if rl.IsKeyPressed(.ESCAPE) {
-		app.palette_open = true
-		app.palette_mode = .Commands
+		open_command_palette(app)
 		return
 	}
 	if rl.IsKeyPressed(.TAB) {
 		execute_command(app, .First_Line_Indent)
 		return
 	}
-	if pressed_or_repeat(.BACKSPACE) {
+	if pressed_or_repeat(.BACKSPACE) && (app.cursor > 0 || has_selection(app)) {
+		begin_edit(app, .Delete)
 		backspace(app)
 	}
 	if rl.IsKeyPressed(.ENTER) {
+		begin_edit(app, .Other)
 		insert_rune(app, '\n')
 	}
 	for {
@@ -418,9 +471,17 @@ handle_editing :: proc(app: ^App) {
 			break
 		}
 		if ch >= ' ' && ch != 127 {
+			begin_typing_edit(app, ch)
 			insert_rune(app, ch)
 		}
 	}
+}
+
+open_command_palette :: proc(app: ^App) {
+	app.palette_open = true
+	app.palette_mode = .Commands
+	app.selected_command = 0
+	clear(&app.palette_query)
 }
 
 update_palette :: proc(app: ^App) {
@@ -432,14 +493,101 @@ update_palette :: proc(app: ^App) {
 		app.palette_open = false
 		return
 	}
-	if pressed_or_repeat(.DOWN) {
-		app.selected_command = (app.selected_command + 1) % len(COMMANDS)
+	entries := palette_entries(app)
+	n := len(entries)
+	if pressed_or_repeat(.DOWN) && n > 0 {
+		app.selected_command = (app.selected_command + 1) % n
 	}
-	if pressed_or_repeat(.UP) {
-		app.selected_command = (app.selected_command + len(COMMANDS) - 1) % len(COMMANDS)
+	if pressed_or_repeat(.UP) && n > 0 {
+		app.selected_command = (app.selected_command + n - 1) % n
 	}
-	if rl.IsKeyPressed(.ENTER) {
-		execute_command(app, COMMANDS[app.selected_command].kind)
+	if rl.IsKeyPressed(.ENTER) && n > 0 {
+		sel := clamp(app.selected_command, 0, n - 1)
+		execute_command(app, COMMANDS[entries[sel]].kind)
+		return
+	}
+	if pressed_or_repeat(.BACKSPACE) && len(app.palette_query) > 0 {
+		pop(&app.palette_query)
+		app.selected_command = 0
+	}
+	for {
+		ch := rl.GetCharPressed()
+		if ch == 0 {
+			break
+		}
+		if ch >= ' ' && ch != 127 {
+			append(&app.palette_query, ch)
+			app.selected_command = 0
+		}
+	}
+}
+
+// Command indices to show: filtered by the query, or (when empty) recents first.
+palette_entries :: proc(app: ^App) -> []int {
+	entries := make([dynamic]int, context.temp_allocator)
+	if len(app.palette_query) == 0 {
+		for kind in app.recent {
+			idx := command_index(kind)
+			if idx >= 0 {
+				append(&entries, idx)
+			}
+		}
+		for cmd, i in COMMANDS {
+			if !slice.contains(app.recent[:], cmd.kind) {
+				append(&entries, i)
+			}
+		}
+	} else {
+		q := palette_query_lower(app)
+		for cmd, i in COMMANDS {
+			if command_label_matches(cmd.label, q) {
+				append(&entries, i)
+			}
+		}
+	}
+	return entries[:]
+}
+
+command_index :: proc(kind: Command_Kind) -> int {
+	for cmd, i in COMMANDS {
+		if cmd.kind == kind {
+			return i
+		}
+	}
+	return -1
+}
+
+palette_query_lower :: proc(app: ^App) -> string {
+	sb := strings.builder_make(context.temp_allocator)
+	for ch in app.palette_query {
+		strings.write_rune(&sb, unicode.to_lower(ch))
+	}
+	return strings.to_string(sb)
+}
+
+palette_query_cstring :: proc(app: ^App) -> cstring {
+	sb := strings.builder_make(context.temp_allocator)
+	for ch in app.palette_query {
+		strings.write_rune(&sb, ch)
+	}
+	cs, _ := strings.to_cstring(&sb)
+	return cs
+}
+
+command_label_matches :: proc(label: cstring, q: string) -> bool {
+	return strings.contains(strings.to_lower(string(label), context.temp_allocator), q)
+}
+
+record_recent :: proc(app: ^App, kind: Command_Kind) {
+	for r, i in app.recent {
+		if r == kind {
+			ordered_remove(&app.recent, i)
+			break
+		}
+	}
+	inject_at(&app.recent, 0, kind)
+	for len(app.recent) > 3 {
+		pop(&app.recent)
 	}
 }
 
@@ -484,6 +632,13 @@ update_path_prompt :: proc(app: ^App) {
 }
 
 execute_command :: proc(app: ^App, kind: Command_Kind) {
+	if kind != .Theme_Cycle && kind != .Undo && kind != .Redo {
+		record_recent(app, kind)
+	}
+	#partial switch kind {
+	case .Cut, .Paste, .Bold, .Italic, .Underline, .Header_1 ..= .Header_4, .Align_Left ..= .Align_Justify, .First_Line_Indent:
+		begin_edit(app, .Other)
+	}
 	switch kind {
 	case .Save:
 		if len(app.file_path) == 0 {
@@ -496,6 +651,12 @@ execute_command :: proc(app: ^App, kind: Command_Kind) {
 		begin_path_prompt(app, .Save_As)
 	case .Open:
 		begin_path_prompt(app, .Open)
+	case .Undo:
+		undo(app)
+		app.palette_open = false
+	case .Redo:
+		redo(app)
+		app.palette_open = false
 	case .Copy:
 		copy_selection(app)
 		app.palette_open = false
@@ -557,6 +718,7 @@ execute_command :: proc(app: ^App, kind: Command_Kind) {
 	case .Theme_Cycle:
 		app.theme_index = (app.theme_index + 1) % len(THEMES)
 		app.status = THEMES[app.theme_index].name
+		save_settings(app)
 		// palette stays open so repeated Enter browses every theme
 	case .Quit:
 		app.quit = true
@@ -606,6 +768,7 @@ move_cursor :: proc(app: ^App, pos: int, selecting: bool) {
 		app.anchor = app.cursor
 	}
 	sync_active_style(app)
+	app.last_edit = .Other // moving the caret ends the current undo group
 }
 
 sync_active_style :: proc(app: ^App) {
@@ -613,6 +776,161 @@ sync_active_style :: proc(app: ^App) {
 		app.active_style = app.styles[app.cursor - 1]
 	} else {
 		app.active_style = Char_Style{}
+	}
+}
+
+// Snapshot the document before an edit, coalescing runs of the same kind.
+begin_edit :: proc(app: ^App, kind: Edit_Kind) {
+	if kind == .Other || app.last_edit != kind {
+		push_undo(app)
+	}
+	app.last_edit = kind
+}
+
+// Word-granular undo, like Word: start a new undo step at each word boundary so
+// Ctrl+Z peels off a word at a time rather than the whole typing burst.
+begin_typing_edit :: proc(app: ^App, ch: rune) {
+	word_start := is_word(ch) && (app.cursor == 0 || !is_word(app.text[app.cursor - 1]))
+	if word_start || app.last_edit != .Insert {
+		push_undo(app)
+	}
+	app.last_edit = .Insert
+}
+
+push_undo :: proc(app: ^App) {
+	append(&app.undo, current_snapshot(app))
+	clear_snapshots(&app.redo) // a fresh edit invalidates the redo history
+	// ponytail: cap the history at 200 full snapshots; docs are small, so this is plenty.
+	if len(app.undo) > 200 {
+		free_snapshot(app.undo[0])
+		ordered_remove(&app.undo, 0)
+	}
+}
+
+undo :: proc(app: ^App) {
+	if len(app.undo) == 0 {
+		return
+	}
+	append(&app.redo, current_snapshot(app))
+	snap := pop(&app.undo)
+	restore_snapshot(app, snap)
+	free_snapshot(snap)
+	app.last_edit = .Other
+	app.dirty = true
+}
+
+redo :: proc(app: ^App) {
+	if len(app.redo) == 0 {
+		return
+	}
+	append(&app.undo, current_snapshot(app))
+	snap := pop(&app.redo)
+	restore_snapshot(app, snap)
+	free_snapshot(snap)
+	app.last_edit = .Other
+	app.dirty = true
+}
+
+current_snapshot :: proc(app: ^App) -> Snapshot {
+	return Snapshot {
+		text       = slice.clone(app.text[:]),
+		styles     = slice.clone(app.styles[:]),
+		paragraphs = slice.clone(app.paragraphs[:]),
+		cursor     = app.cursor,
+		anchor     = app.anchor,
+	}
+}
+
+restore_snapshot :: proc(app: ^App, snap: Snapshot) {
+	clear(&app.text)
+	append(&app.text, ..snap.text)
+	clear(&app.styles)
+	append(&app.styles, ..snap.styles)
+	clear(&app.paragraphs)
+	append(&app.paragraphs, ..snap.paragraphs)
+	app.cursor = clamp(snap.cursor, 0, len(app.text))
+	app.anchor = clamp(snap.anchor, 0, len(app.text))
+	sync_active_style(app)
+}
+
+free_snapshot :: proc(snap: Snapshot) {
+	delete(snap.text)
+	delete(snap.styles)
+	delete(snap.paragraphs)
+}
+
+clear_snapshots :: proc(stack: ^[dynamic]Snapshot) {
+	for snap in stack {
+		free_snapshot(snap)
+	}
+	clear(stack)
+}
+
+count_words :: proc(app: ^App) -> int {
+	n := 0
+	in_word := false
+	for ch in app.text {
+		space := ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r'
+		if !space && !in_word {
+			n += 1
+		}
+		in_word = !space
+	}
+	return n
+}
+
+settings_file :: proc() -> string {
+	dir: string
+	when ODIN_OS == .Windows {
+		dir = os.get_env("LOCALAPPDATA", context.temp_allocator)
+		if dir == "" {
+			dir = os.get_env("APPDATA", context.temp_allocator)
+		}
+	} else {
+		dir = os.get_env("XDG_CONFIG_HOME", context.temp_allocator)
+		if dir == "" {
+			dir, _ = filepath.join({os.get_env("HOME", context.temp_allocator), ".config"}, context.temp_allocator)
+		}
+	}
+	if dir == "" {
+		return ""
+	}
+	path, _ := filepath.join({dir, "Manuscrito", "settings.txt"}, context.temp_allocator)
+	return path
+}
+
+save_settings :: proc(app: ^App) {
+	path := settings_file()
+	if path == "" {
+		return
+	}
+	os.make_directory(filepath.dir(path, context.temp_allocator))
+	_ = os.write_entire_file(path, fmt.tprintf("theme=%s\n", THEMES[app.theme_index].name))
+}
+
+load_settings :: proc(app: ^App) {
+	path := settings_file()
+	if path == "" {
+		return
+	}
+	data, err := os.read_entire_file(path, context.temp_allocator)
+	if err != nil {
+		return
+	}
+	text := string(data)
+	for line in strings.split_lines_iterator(&text) {
+		if strings.has_prefix(line, "theme=") {
+			set_theme_by_name(app, strings.trim_space(line[6:]))
+		}
+	}
+}
+
+set_theme_by_name :: proc(app: ^App, name: string) {
+	for theme, i in THEMES {
+		if string(theme.name) == name {
+			app.theme_index = i
+			return
+		}
 	}
 }
 
@@ -1183,6 +1501,10 @@ draw_document :: proc(app: ^App, theme: Theme) {
 	max_content_w := max(f32(screen_w - 112), 240)
 	content_w := min(max_content_w, char_width(app, 'n', Char_Style{}, base_size) * 60)
 	margin_x := int((f32(screen_w) - content_w) * 0.5)
+	// The "page": a slightly different shade behind the text, padded on both sides.
+	page_pad := f32(44)
+	page_x := f32(margin_x) - page_pad
+	rl.DrawRectangle(c.int(max(page_x, 0)), 0, c.int(content_w + page_pad * 2), c.int(screen_h), theme.page)
 	ensure_cursor_visible(app, content_w, base_size, f32(screen_h - top - 96))
 	y := f32(top) - app.scroll_y
 	start := 0
@@ -1210,6 +1532,11 @@ draw_document :: proc(app: ^App, theme: Theme) {
 	rl.DrawRectangle(0, c.int(screen_h - 52), c.int(screen_w), 52, rl.ColorAlpha(theme.background, 0.92))
 	rl.DrawRectangle(0, c.int(screen_h - 52), c.int(screen_w), 52, rl.ColorAlpha(rl.BLACK, 0.14))
 	rl.DrawTextEx(app.fonts.ui, status, rl.Vector2{24, f32(screen_h - 38)}, 18, 1, theme.foreground)
+
+	words := count_words(app)
+	count_text := fmt.ctprintf("%d words / %d pages", words, (words + 249) / 250)
+	count_w := rl.MeasureTextEx(app.fonts.ui, count_text, 18, 1)
+	rl.DrawTextEx(app.fonts.ui, count_text, rl.Vector2{f32(screen_w) - count_w.x - 24, f32(screen_h - 38)}, 18, 1, theme.foreground)
 }
 
 ensure_cursor_visible :: proc(app: ^App, width, base_size, viewport_h: f32) {
@@ -1319,20 +1646,46 @@ draw_visual_line :: proc(app: ^App, theme: Theme, paragraph: Paragraph, start, e
 	extra_space := max(available - line_width, 0) / f32(space_count) if space_count > 0 else 0
 	lo, hi := selection_range(app)
 
+	// One rectangle over the whole selected span on this line (no per-glyph boxes).
+	if has_selection(app) {
+		sx := x
+		sel_x0, sel_x1: f32 = -1, -1
+		for i in start..<end {
+			adv := char_width(app, app.text[i], app.styles[i], font_size) + 2
+			if app.text[i] == ' ' {
+				adv += extra_space
+			}
+			if i >= lo && i < hi {
+				if sel_x0 < 0 {
+					sel_x0 = sx
+				}
+				sel_x1 = sx + adv
+			}
+			sx += adv
+		}
+		if sel_x0 >= 0 {
+			rl.DrawRectangle(c.int(sel_x0), c.int(y - 2), c.int(sel_x1 - sel_x0), c.int(line_h), theme.selection)
+		}
+	}
+
 	if app.cursor == start && !app.palette_open {
 		draw_cursor(x, y, font_size, theme.accent)
 	}
 
+	// Draw glyphs; underline as continuous runs so there are no gaps between letters.
+	ul_x0: f32 = -1
 	for i in start..<end {
 		style := app.styles[i]
 		ch := app.text[i]
 		w := char_width(app, ch, style, font_size)
-		if has_selection(app) && i >= lo && i < hi {
-			rl.DrawRectangle(c.int(x), c.int(y - 2), c.int(w + 4), c.int(line_h), theme.selection)
-		}
 		draw_codepoint(app, ch, style, rl.Vector2{x, y}, font_size, theme.foreground)
 		if style.underline {
-			rl.DrawLineEx(rl.Vector2{x, y + font_size + 4}, rl.Vector2{x + w, y + font_size + 4}, 1.5, theme.foreground)
+			if ul_x0 < 0 {
+				ul_x0 = x
+			}
+		} else if ul_x0 >= 0 {
+			rl.DrawLineEx(rl.Vector2{ul_x0, y + font_size + 4}, rl.Vector2{x, y + font_size + 4}, 1.5, theme.foreground)
+			ul_x0 = -1
 		}
 		x += w + 2
 		if ch == ' ' {
@@ -1341,6 +1694,9 @@ draw_visual_line :: proc(app: ^App, theme: Theme, paragraph: Paragraph, start, e
 		if app.cursor == i + 1 && !app.palette_open {
 			draw_cursor(x, y, font_size, theme.accent)
 		}
+	}
+	if ul_x0 >= 0 {
+		rl.DrawLineEx(rl.Vector2{ul_x0, y + font_size + 4}, rl.Vector2{x, y + font_size + 4}, 1.5, theme.foreground)
 	}
 }
 
@@ -1406,11 +1762,14 @@ draw_palette :: proc(app: ^App, theme: Theme) {
 	}
 	screen_w := int(rl.GetScreenWidth())
 	screen_h := int(rl.GetScreenHeight())
+	entries := palette_entries(app)
 	row_h := 36
-	visible := min(len(COMMANDS), max(8, (screen_h - 180) / row_h))
-	first := clamp(app.selected_command - visible / 2, 0, max(len(COMMANDS) - visible, 0))
+	visible := min(len(entries), max(6, (screen_h - 240) / row_h))
+	visible = max(visible, 1)
+	sel := clamp(app.selected_command, 0, max(len(entries) - 1, 0))
+	first := clamp(sel - visible / 2, 0, max(len(entries) - visible, 0))
 	panel_w := min(620, screen_w - 80)
-	panel_h := 82 + visible * row_h
+	panel_h := 100 + visible * row_h
 	panel_x := (screen_w - panel_w) / 2
 	panel_y := (screen_h - panel_h) / 2
 	text_color := readable_foreground(theme)
@@ -1418,15 +1777,37 @@ draw_palette :: proc(app: ^App, theme: Theme) {
 	rl.DrawRectangle(0, 0, c.int(screen_w), c.int(screen_h), rl.ColorAlpha(theme.background, 0.72))
 	rl.DrawRectangle(c.int(panel_x), c.int(panel_y), c.int(panel_w), c.int(panel_h), opaque_panel(theme))
 	rl.DrawRectangleLines(c.int(panel_x), c.int(panel_y), c.int(panel_w), c.int(panel_h), theme.border)
-	rl.DrawTextEx(app.fonts.ui, "Palette", rl.Vector2{f32(panel_x + 24), f32(panel_y + 18)}, 25, 1, text_color)
 
+	// Text input for filtering.
+	input_x := panel_x + 20
+	input_y := panel_y + 20
+	input_w := panel_w - 40
+	input_h := 40
+	rl.DrawRectangle(c.int(input_x), c.int(input_y), c.int(input_w), c.int(input_h), rl.ColorAlpha(theme.background, 0.55))
+	rl.DrawRectangleLines(c.int(input_x), c.int(input_y), c.int(input_w), c.int(input_h), theme.border)
+	if len(app.palette_query) == 0 {
+		rl.DrawTextEx(app.fonts.ui, "Type to filter commands...", rl.Vector2{f32(input_x + 12), f32(input_y + 9)}, 21, 1, theme.muted)
+	} else {
+		rl.DrawTextEx(app.fonts.ui, palette_query_cstring(app), rl.Vector2{f32(input_x + 12), f32(input_y + 9)}, 21, 1, text_color)
+	}
+
+	list_y := panel_y + 76
+	recent_count := len(app.recent) if len(app.palette_query) == 0 else 0
 	for row in 0..<visible {
 		i := first + row
-		y := panel_y + 58 + row * row_h
-		if i == app.selected_command {
-			rl.DrawRectangle(c.int(panel_x + 12), c.int(y - 6), c.int(panel_w - 24), c.int(row_h - 4), rl.ColorAlpha(theme.accent, 0.18))
+		if i >= len(entries) {
+			break
 		}
-		rl.DrawTextEx(app.fonts.ui, COMMANDS[i].label, rl.Vector2{f32(panel_x + 28), f32(y)}, 22, 1, text_color)
+		ry := list_y + row * row_h
+		if i == sel {
+			rl.DrawRectangle(c.int(panel_x + 12), c.int(ry - 6), c.int(panel_w - 24), c.int(row_h - 4), rl.ColorAlpha(theme.accent, 0.18))
+		}
+		rl.DrawTextEx(app.fonts.ui, COMMANDS[entries[i]].label, rl.Vector2{f32(panel_x + 28), f32(ry)}, 22, 1, text_color)
+	}
+	// Divider between the recents group and the rest.
+	if recent_count > 0 && recent_count < len(entries) && recent_count >= first && recent_count < first + visible {
+		dy := f32(list_y + (recent_count - first) * row_h - 8)
+		rl.DrawLineEx(rl.Vector2{f32(panel_x + 16), dy}, rl.Vector2{f32(panel_x + panel_w - 16), dy}, 1, theme.border)
 	}
 }
 
