@@ -56,8 +56,7 @@ Command_Kind :: enum int {
 	Zoom_Reset,
 	First_Line_Indent,
 	Keep_Cursor_Centered,
-	Theme_Paper,
-	Theme_Night,
+	Theme_Cycle,
 	Quit,
 }
 
@@ -137,8 +136,16 @@ App :: struct {
 }
 
 THEMES := [?]Theme {
-	{"Paper", rl.Color{248, 246, 239, 255}, rl.Color{31, 33, 36, 255}, rl.Color{130, 126, 116, 255}, rl.Color{255, 253, 247, 245}, rl.Color{205, 199, 188, 255}, rl.Color{41, 103, 92, 255}, rl.Color{191, 221, 214, 160}},
-	{"Night", rl.Color{19, 22, 26, 255}, rl.Color{229, 231, 235, 255}, rl.Color{137, 146, 158, 255}, rl.Color{31, 36, 42, 245}, rl.Color{73, 84, 96, 255}, rl.Color{122, 178, 255, 255}, rl.Color{52, 88, 134, 170}},
+	// Light
+	{"Paper",    rl.Color{248, 246, 239, 255}, rl.Color{31, 33, 36, 255},   rl.Color{130, 126, 116, 255}, rl.Color{255, 253, 247, 245}, rl.Color{205, 199, 188, 255}, rl.Color{41, 103, 92, 255},  rl.Color{191, 221, 214, 160}},
+	{"Sepia",    rl.Color{237, 224, 200, 255}, rl.Color{60, 44, 30, 255},   rl.Color{140, 120, 95, 255},  rl.Color{247, 236, 214, 245}, rl.Color{206, 188, 158, 255}, rl.Color{150, 90, 40, 255},  rl.Color{219, 197, 158, 160}},
+	{"Daylight", rl.Color{247, 249, 252, 255}, rl.Color{28, 34, 42, 255},   rl.Color{120, 132, 148, 255}, rl.Color{255, 255, 255, 245}, rl.Color{206, 214, 226, 255}, rl.Color{40, 110, 200, 255}, rl.Color{190, 214, 244, 160}},
+	{"Mint",     rl.Color{240, 247, 242, 255}, rl.Color{26, 40, 34, 255},   rl.Color{116, 140, 128, 255}, rl.Color{250, 255, 252, 245}, rl.Color{200, 220, 208, 255}, rl.Color{34, 130, 96, 255},  rl.Color{194, 226, 210, 160}},
+	// Dark
+	{"Night",    rl.Color{19, 22, 26, 255},    rl.Color{229, 231, 235, 255}, rl.Color{137, 146, 158, 255}, rl.Color{31, 36, 42, 245},   rl.Color{73, 84, 96, 255},    rl.Color{122, 178, 255, 255}, rl.Color{52, 88, 134, 170}},
+	{"Nord",     rl.Color{46, 52, 64, 255},    rl.Color{216, 222, 233, 255}, rl.Color{136, 146, 167, 255}, rl.Color{59, 66, 82, 245},   rl.Color{76, 86, 106, 255},   rl.Color{136, 192, 208, 255}, rl.Color{67, 76, 94, 180}},
+	{"Dracula",  rl.Color{40, 42, 54, 255},    rl.Color{248, 248, 242, 255}, rl.Color{140, 144, 160, 255}, rl.Color{54, 57, 74, 245},   rl.Color{68, 71, 90, 255},    rl.Color{189, 147, 249, 255}, rl.Color{68, 71, 110, 180}},
+	{"Gruvbox",  rl.Color{40, 40, 40, 255},    rl.Color{235, 219, 178, 255}, rl.Color{168, 153, 132, 255}, rl.Color{60, 56, 54, 245},   rl.Color{80, 73, 69, 255},    rl.Color{215, 153, 33, 255},  rl.Color{80, 73, 69, 180}},
 }
 
 COMMANDS := [?]Command {
@@ -164,8 +171,7 @@ COMMANDS := [?]Command {
 	{"Zoom Reset", .Zoom_Reset},
 	{"First Line Indent", .First_Line_Indent},
 	{"Keep Cursor Centered Vertically", .Keep_Cursor_Centered},
-	{"Theme: Paper", .Theme_Paper},
-	{"Theme: Night", .Theme_Night},
+	{"Theme: Next", .Theme_Cycle},
 	{"Quit", .Quit},
 }
 
@@ -176,9 +182,11 @@ main :: proc() {
 
 	monitor := rl.GetCurrentMonitor()
 	monitor_pos := rl.GetMonitorPosition(monitor)
-	// ponytail: borderless fullscreen is just an undecorated monitor-sized window; no fullscreen toggles on Windows.
+	// ponytail: borderless fullscreen is an undecorated monitor-sized window; the
+	// +1 extra line keeps it 1px past the monitor so Windows' fullscreen
+	// optimizations don't promote it to exclusive fullscreen. Off-screen row is invisible.
 	rl.SetWindowPosition(c.int(monitor_pos.x), c.int(monitor_pos.y))
-	rl.SetWindowSize(rl.GetMonitorWidth(monitor), rl.GetMonitorHeight(monitor))
+	rl.SetWindowSize(rl.GetMonitorWidth(monitor), rl.GetMonitorHeight(monitor) + 1)
 	when ODIN_OS == .Windows {
 		rl.SetWindowState({.WINDOW_UNDECORATED, .WINDOW_TOPMOST})
 		rl.SetWindowFocused()
@@ -243,7 +251,10 @@ load_fonts :: proc() -> Fonts {
 load_font_from_memory :: proc(data: []u8, size: int) -> (font: rl.Font, loaded: bool) {
 	font = rl.LoadFontFromMemory(".ttf", raw_data(data), c.int(len(data)), c.int(size), nil, 0)
 	if rl.IsFontValid(font) {
-		rl.SetTextureFilter(font.texture, .BILINEAR)
+		// Atlas is baked at `size` px but drawn far smaller; mipmaps + trilinear
+		// keep thin strokes solid and edges smooth instead of faint and aliased.
+		rl.GenTextureMipmaps(&font.texture)
+		rl.SetTextureFilter(font.texture, .TRILINEAR)
 	}
 	return font, rl.IsFontValid(font)
 }
@@ -543,12 +554,10 @@ execute_command :: proc(app: ^App, kind: Command_Kind) {
 	case .Keep_Cursor_Centered:
 		app.keep_cursor_centered = !app.keep_cursor_centered
 		app.palette_open = false
-	case .Theme_Paper:
-		app.theme_index = 0
-		app.palette_open = false
-	case .Theme_Night:
-		app.theme_index = 1
-		app.palette_open = false
+	case .Theme_Cycle:
+		app.theme_index = (app.theme_index + 1) % len(THEMES)
+		app.status = THEMES[app.theme_index].name
+		// palette stays open so repeated Enter browses every theme
 	case .Quit:
 		app.quit = true
 	}
@@ -1199,7 +1208,8 @@ draw_document :: proc(app: ^App, theme: Theme) {
 		status = "Unsaved changes"
 	}
 	rl.DrawRectangle(0, c.int(screen_h - 52), c.int(screen_w), 52, rl.ColorAlpha(theme.background, 0.92))
-	rl.DrawTextEx(app.fonts.ui, status, rl.Vector2{24, f32(screen_h - 38)}, 18, 1, readable_muted(theme))
+	rl.DrawRectangle(0, c.int(screen_h - 52), c.int(screen_w), 52, rl.ColorAlpha(rl.BLACK, 0.14))
+	rl.DrawTextEx(app.fonts.ui, status, rl.Vector2{24, f32(screen_h - 38)}, 18, 1, theme.foreground)
 }
 
 ensure_cursor_visible :: proc(app: ^App, width, base_size, viewport_h: f32) {
@@ -1252,13 +1262,6 @@ cursor_document_y :: proc(app: ^App, width, base_size: f32) -> f32 {
 		}
 	}
 	return y
-}
-
-readable_muted :: proc(theme: Theme) -> rl.Color {
-	if theme.background[0] < 80 && theme.background[1] < 80 && theme.background[2] < 80 {
-		return rl.Color{215, 222, 230, 255}
-	}
-	return theme.muted
 }
 
 draw_paragraph :: proc(app: ^App, theme: Theme, paragraph: Paragraph, start, end: int, left, y, width, base_size: f32) -> f32 {
