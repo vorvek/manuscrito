@@ -823,6 +823,9 @@ execute_command :: proc(app: ^App, kind: Command_Kind) {
 		app.confirm_kind = kind
 		app.palette_open = false
 		app.status = "Unsaved changes. Repeat the command to discard." if app.dirty else "Press Ctrl+Q again to quit."
+		// Not a timed message: it shows only while confirm_pending, and the old
+		// stamp keeps it from reappearing in the timed slot once the confirm clears.
+		app.status_time = 0
 		return
 	}
 	app.confirm_pending = false
@@ -1162,7 +1165,7 @@ count_words :: proc(app: ^App) -> int {
 	return n
 }
 
-// Set a transient status message and stamp it, so the status bar can fade it.
+// Set a transient status message and stamp it, so the status bar can clear it after a few seconds.
 set_status :: proc(app: ^App, msg: cstring) {
 	app.status = msg
 	app.status_time = rl.GetTime()
@@ -2040,10 +2043,18 @@ write_rtf_rune :: proc(sb: ^strings.Builder, ch: rune) {
 	case '{':  strings.write_string(sb, "\\{")
 	case '}':  strings.write_string(sb, "\\}")
 	case:
+		// RTF \uN takes a signed 16-bit integer. BMP code points above 0x7FFF
+		// must wrap negative (the i16 cast does that); code points past the BMP
+		// become a UTF-16 surrogate pair.
 		if ch < 128 {
 			strings.write_rune(sb, ch)
+		} else if ch <= 0xFFFF {
+			strings.write_string(sb, fmt.tprintf("\\u%d?", i16(ch)))
 		} else {
-			strings.write_string(sb, fmt.tprintf("\\u%d?", int(ch)))
+			c := int(ch) - 0x10000
+			hi := 0xD800 + (c >> 10)
+			lo := 0xDC00 + (c & 0x3FF)
+			strings.write_string(sb, fmt.tprintf("\\u%d?\\u%d?", i16(hi), i16(lo)))
 		}
 	}
 }

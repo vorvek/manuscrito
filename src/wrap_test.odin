@@ -161,3 +161,21 @@ test_export_markers :: proc(t: ^testing.T) {
 	export_txt(&app, &txt)
 	testing.expect(t, strings.contains(strings.to_string(txt), "Hi"), "txt has text")
 }
+
+// The RTF \uN control word takes a signed 16-bit integer, so non-ASCII runes
+// must be cast through i16 (and astral code points split into a surrogate pair).
+@(test)
+test_rtf_rune_signed :: proc(t: ^testing.T) {
+	// Accented Latin (U+00E9) stays a small positive value.
+	a := strings.builder_make(context.temp_allocator)
+	write_rtf_rune(&a, 'é')
+	testing.expect(t, strings.contains(strings.to_string(a), "\\u233?"), "accented latin stays positive")
+	// A high-BMP rune (U+8A9E) must wrap to a negative value.
+	b := strings.builder_make(context.temp_allocator)
+	write_rtf_rune(&b, '語')
+	testing.expect(t, strings.contains(strings.to_string(b), "\\u-"), "high BMP wraps negative")
+	// An astral rune (U+1F600) becomes a UTF-16 surrogate pair: two \u words.
+	c := strings.builder_make(context.temp_allocator)
+	write_rtf_rune(&c, '😀')
+	testing.expect(t, strings.count(strings.to_string(c), "\\u") == 2, "astral emits surrogate pair")
+}
