@@ -25,7 +25,7 @@ Windows users can run `.\build.ps1`; Linux/macOS users can run `./build.sh`.
 - `Ctrl+Z` undoes; `Ctrl+Shift+Z` redoes.
 - Click to place the cursor; drag or `Shift+Click` to select.
 - The mouse wheel moves the cursor by paragraph; `Shift+Wheel` selects; `Ctrl+Wheel` zooms.
-- `Ctrl+B`, `Ctrl+I`, `Ctrl+U` toggle bold, italics, and underline.
+- `Ctrl+B`, `Ctrl+I`, `Ctrl+U`, `Ctrl+J` toggle bold, italics, underline, and strikethrough.
 - `Ctrl+H` toggles a marker highlight; each theme has its own highlight color.
 - `Ctrl+S` saves; `Ctrl+Shift+S` saves as; `Ctrl+O` opens; `Ctrl+N` starts a new document.
 - `Ctrl+F` finds text; `Enter` in the prompt jumps to the next match.
@@ -38,7 +38,11 @@ Windows users can run `.\build.ps1`; Linux/macOS users can run `./build.sh`.
 
 Quit always asks for a second press. Open and New warn about unsaved changes; run the command a second time to discard them.
 
-All commands are also available from the palette, including headers, alignment, and themes. Toggles such as Page View and Keep Cursor Centered show their state in the palette. Page View splits the writing area into novel-sized pages of about 250 words.
+All commands are also available from the palette, including headers, alignment, and themes. Toggles such as Page View and Keep Cursor Centered show their state in the palette. Page View splits the writing area into novel-sized pages of about 250 words and numbers each page.
+
+The palette can also export the document to plain text, RTF, DOC, Markdown, or HTML. Exports carry the text plus, where the format allows, headings, paragraphs, indentation, alignment, and the bold, italic, underline, and strikethrough styles. The theme is never exported.
+
+The status bar shows the file name on the left, a reminder to press `Ctrl+P` in the middle, and the current page next to the word and page counts on the right.
 
 ## License
 
