@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 package main
 
 import rl "vendor:raylib"
@@ -12,7 +13,7 @@ import "core:strings"
 import "core:unicode"
 import "core:unicode/utf8"
 
-VERSION :: "1.0.2"
+VERSION :: "1.0.3"
 MAGIC :: "MANUSCRITO\t1"
 // Text lines per page in page view. With the 60-char column this lands near
 // 250 words, the usual novel manuscript page.
