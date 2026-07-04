@@ -43,6 +43,14 @@ Palette_Mode :: enum int {
 	Path,
 }
 
+Export_Format :: enum int {
+	Txt,
+	Rtf,
+	Doc,
+	Md,
+	Html,
+}
+
 Command_Kind :: enum int {
 	Save,
 	Save_As,
@@ -1737,6 +1745,217 @@ write_paragraph :: proc(sb: ^strings.Builder, paragraph: Paragraph) {
 	strings.write_byte(sb, '\t')
 	strings.write_int(sb, 1 if paragraph.first_indent else 0)
 	strings.write_byte(sb, '\n')
+}
+
+export_txt :: proc(app: ^App, sb: ^strings.Builder) {
+	start := 0
+	for _, p in app.paragraphs {
+		end := paragraph_end(app, start)
+		for i in start ..< end {
+			strings.write_rune(sb, app.text[i])
+		}
+		if p != len(app.paragraphs) - 1 {
+			strings.write_string(sb, "\n\n")
+		}
+		start = end + 1
+	}
+	strings.write_byte(sb, '\n')
+}
+
+export_md :: proc(app: ^App, sb: ^strings.Builder) {
+	start := 0
+	for para, p in app.paragraphs {
+		end := paragraph_end(app, start)
+		switch para.header {
+		case 1: strings.write_string(sb, "# ")
+		case 2: strings.write_string(sb, "## ")
+		case 3: strings.write_string(sb, "### ")
+		case 4: strings.write_string(sb, "#### ")
+		}
+		write_md_runs(app, sb, start, end)
+		if p != len(app.paragraphs) - 1 {
+			strings.write_string(sb, "\n\n")
+		}
+		start = end + 1
+	}
+	strings.write_byte(sb, '\n')
+}
+
+write_md_runs :: proc(app: ^App, sb: ^strings.Builder, start, end: int) {
+	i := start
+	for i < end {
+		style := app.styles[i]
+		run_start := i
+		for i < end && same_style(app.styles[i], style) {
+			i += 1
+		}
+		opens := make([dynamic]string, context.temp_allocator)
+		closes := make([dynamic]string, context.temp_allocator)
+		if style.underline { append(&opens, "<u>"); append(&closes, "</u>") }
+		if style.bold      { append(&opens, "**");  append(&closes, "**") }
+		if style.italic    { append(&opens, "*");   append(&closes, "*") }
+		if style.strike    { append(&opens, "~~");  append(&closes, "~~") }
+		for o in opens {
+			strings.write_string(sb, o)
+		}
+		for j in run_start ..< i {
+			strings.write_rune(sb, app.text[j])
+		}
+		#reverse for cl in closes {
+			strings.write_string(sb, cl)
+		}
+	}
+}
+
+export_html :: proc(app: ^App, sb: ^strings.Builder) {
+	strings.write_string(sb, "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n")
+	start := 0
+	for para in app.paragraphs {
+		end := paragraph_end(app, start)
+		tag := "p"
+		switch para.header {
+		case 1: tag = "h1"
+		case 2: tag = "h2"
+		case 3: tag = "h3"
+		case 4: tag = "h4"
+		}
+		strings.write_byte(sb, '<')
+		strings.write_string(sb, tag)
+		style_attr := html_paragraph_style(para)
+		if len(style_attr) > 0 {
+			strings.write_string(sb, " style=\"")
+			strings.write_string(sb, style_attr)
+			strings.write_string(sb, "\"")
+		}
+		strings.write_byte(sb, '>')
+		write_html_runs(app, sb, start, end)
+		strings.write_string(sb, "</")
+		strings.write_string(sb, tag)
+		strings.write_string(sb, ">\n")
+		start = end + 1
+	}
+	strings.write_string(sb, "</body>\n</html>\n")
+}
+
+html_paragraph_style :: proc(para: Paragraph) -> string {
+	sb := strings.builder_make(context.temp_allocator)
+	switch para.align {
+	case .Center:  strings.write_string(&sb, "text-align:center;")
+	case .Right:   strings.write_string(&sb, "text-align:right;")
+	case .Justify: strings.write_string(&sb, "text-align:justify;")
+	case .Left:
+	}
+	if para.first_indent {
+		strings.write_string(&sb, "text-indent:2em;")
+	}
+	return strings.to_string(sb)
+}
+
+write_html_runs :: proc(app: ^App, sb: ^strings.Builder, start, end: int) {
+	i := start
+	for i < end {
+		style := app.styles[i]
+		run_start := i
+		for i < end && same_style(app.styles[i], style) {
+			i += 1
+		}
+		opens := make([dynamic]string, context.temp_allocator)
+		closes := make([dynamic]string, context.temp_allocator)
+		if style.bold      { append(&opens, "<b>"); append(&closes, "</b>") }
+		if style.italic    { append(&opens, "<i>"); append(&closes, "</i>") }
+		if style.underline { append(&opens, "<u>"); append(&closes, "</u>") }
+		if style.strike    { append(&opens, "<s>"); append(&closes, "</s>") }
+		for o in opens {
+			strings.write_string(sb, o)
+		}
+		for j in run_start ..< i {
+			write_html_escaped(sb, app.text[j])
+		}
+		#reverse for cl in closes {
+			strings.write_string(sb, cl)
+		}
+	}
+}
+
+write_html_escaped :: proc(sb: ^strings.Builder, ch: rune) {
+	switch ch {
+	case '&': strings.write_string(sb, "&amp;")
+	case '<': strings.write_string(sb, "&lt;")
+	case '>': strings.write_string(sb, "&gt;")
+	case:     strings.write_rune(sb, ch)
+	}
+}
+
+export_rtf :: proc(app: ^App, sb: ^strings.Builder) {
+	strings.write_string(sb, "{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Times New Roman;}}\n")
+	start := 0
+	for para in app.paragraphs {
+		end := paragraph_end(app, start)
+		strings.write_string(sb, "\\pard")
+		switch para.align {
+		case .Left:    strings.write_string(sb, "\\ql")
+		case .Center:  strings.write_string(sb, "\\qc")
+		case .Right:   strings.write_string(sb, "\\qr")
+		case .Justify: strings.write_string(sb, "\\qj")
+		}
+		if para.first_indent {
+			strings.write_string(sb, "\\fi720")
+		}
+		strings.write_string(sb, fmt.tprintf("\\fs%d", rtf_font_size(para.header)))
+		write_rtf_runs(app, sb, start, end)
+		strings.write_string(sb, "\\par\n")
+		start = end + 1
+	}
+	strings.write_string(sb, "}\n")
+}
+
+rtf_font_size :: proc(header: int) -> int {
+	base := f32(24)
+	switch header {
+	case 1: return int(base * 1.7)
+	case 2: return int(base * 1.45)
+	case 3: return int(base * 1.25)
+	case 4: return int(base * 1.12)
+	}
+	return int(base)
+}
+
+write_rtf_runs :: proc(app: ^App, sb: ^strings.Builder, start, end: int) {
+	i := start
+	for i < end {
+		style := app.styles[i]
+		run_start := i
+		for i < end && same_style(app.styles[i], style) {
+			i += 1
+		}
+		strings.write_byte(sb, '{')
+		wrote_ctrl := false
+		if style.bold      { strings.write_string(sb, "\\b");      wrote_ctrl = true }
+		if style.italic    { strings.write_string(sb, "\\i");      wrote_ctrl = true }
+		if style.underline { strings.write_string(sb, "\\ul");     wrote_ctrl = true }
+		if style.strike    { strings.write_string(sb, "\\strike"); wrote_ctrl = true }
+		if wrote_ctrl {
+			strings.write_byte(sb, ' ')
+		}
+		for j in run_start ..< i {
+			write_rtf_rune(sb, app.text[j])
+		}
+		strings.write_byte(sb, '}')
+	}
+}
+
+write_rtf_rune :: proc(sb: ^strings.Builder, ch: rune) {
+	switch ch {
+	case '\\': strings.write_string(sb, "\\\\")
+	case '{':  strings.write_string(sb, "\\{")
+	case '}':  strings.write_string(sb, "\\}")
+	case:
+		if ch < 128 {
+			strings.write_rune(sb, ch)
+		} else {
+			strings.write_string(sb, fmt.tprintf("\\u%d?", int(ch)))
+		}
+	}
 }
 
 write_run :: proc(sb: ^strings.Builder, style: Char_Style, text: []rune) {

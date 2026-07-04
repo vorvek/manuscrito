@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package main
 
+import "core:strings"
 import "core:testing"
 
 // Cost of a given partition (line-start word indices): sum of squared slack over
@@ -112,4 +113,51 @@ test_style_code_roundtrip :: proc(t: ^testing.T) {
 	back := style_from_code(code)
 	testing.expect(t, same_style(s, back), "strike bit must round-trip through style_code")
 	testing.expect(t, code & 16 != 0, "strike must occupy bit 16")
+}
+
+push_run :: proc(app: ^App, text: string, style: Char_Style) {
+	for ch in text {
+		append(&app.text, ch)
+		append(&app.styles, style)
+	}
+}
+
+@(test)
+test_export_markers :: proc(t: ^testing.T) {
+	app := App{
+		text       = make([dynamic]rune, context.temp_allocator),
+		styles     = make([dynamic]Char_Style, context.temp_allocator),
+		paragraphs = make([dynamic]Paragraph, context.temp_allocator),
+	}
+	// Paragraph 0: heading level 1, plain text "Hi".
+	append(&app.paragraphs, Paragraph{header = 1})
+	push_run(&app, "Hi", Char_Style{})
+	append(&app.text, '\n')
+	append(&app.styles, Char_Style{})
+	// Paragraph 1: bold+italic+strike "X", first-line indent.
+	append(&app.paragraphs, Paragraph{first_indent = true})
+	push_run(&app, "X", Char_Style{bold = true, italic = true, strike = true})
+
+	html := strings.builder_make(context.temp_allocator)
+	export_html(&app, &html)
+	h := strings.to_string(html)
+	testing.expect(t, strings.contains(h, "<h1>"), "html has h1")
+	testing.expect(t, strings.contains(h, "<s>"), "html has strike")
+	testing.expect(t, strings.contains(h, "text-indent"), "html has indent")
+
+	md := strings.builder_make(context.temp_allocator)
+	export_md(&app, &md)
+	m := strings.to_string(md)
+	testing.expect(t, strings.contains(m, "# Hi"), "md has heading")
+	testing.expect(t, strings.contains(m, "~~"), "md has strike")
+
+	rtf := strings.builder_make(context.temp_allocator)
+	export_rtf(&app, &rtf)
+	r := strings.to_string(rtf)
+	testing.expect(t, strings.contains(r, "\\strike"), "rtf has strike")
+	testing.expect(t, strings.contains(r, "\\fi720"), "rtf has indent")
+
+	txt := strings.builder_make(context.temp_allocator)
+	export_txt(&app, &txt)
+	testing.expect(t, strings.contains(strings.to_string(txt), "Hi"), "txt has text")
 }
