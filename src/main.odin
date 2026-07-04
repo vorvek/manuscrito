@@ -1977,20 +1977,37 @@ draw_document :: proc(app: ^App, theme: Theme) {
 		}
 	}
 
-	status := app.status
-	if app.dirty && !app.confirm_pending {
-		status = "Unsaved changes"
-	}
 	rl.DrawRectangle(0, c.int(screen_h - 52), c.int(screen_w), 52, rl.ColorAlpha(theme.background, 0.92))
 	rl.DrawRectangle(0, c.int(screen_h - 52), c.int(screen_w), 52, rl.ColorAlpha(rl.BLACK, 0.14))
-	rl.DrawTextEx(app.fonts.ui, status, rl.Vector2{24, f32(screen_h - 38)}, 18, 1, theme.foreground)
+	bar_y := f32(screen_h - 38)
 
+	// Left: file name, with a bullet when there are unsaved changes.
+	name: cstring = "New document"
+	if len(app.file_path) > 0 {
+		name = fmt.ctprintf("%s", filepath.base(app.file_path))
+	}
+	left_text := fmt.ctprintf("%s •", name) if app.dirty else name
+	rl.DrawTextEx(app.fonts.ui, left_text, rl.Vector2{24, bar_y}, 18, 1, theme.foreground)
+
+	// Center: confirm prompt, else a fresh transient message, else the palette hint.
+	center: cstring = "Press Ctrl+P to open the Command Palette"
+	center_color := theme.muted
+	if app.confirm_pending {
+		center = app.status
+		center_color = theme.foreground
+	} else if rl.GetTime() - app.status_time < 2.5 {
+		center = app.status
+		center_color = theme.foreground
+	}
+	center_w := rl.MeasureTextEx(app.fonts.ui, center, 18, 1)
+	rl.DrawTextEx(app.fonts.ui, center, rl.Vector2{(f32(screen_w) - center_w.x) * 0.5, bar_y}, 18, 1, center_color)
+
+	// Right: current page and totals.
 	words := count_words(app)
-	// Layout pages when page view is on, the word estimate otherwise.
 	pages := page_count if page_count > 0 else (words + 249) / 250
-	count_text := fmt.ctprintf("%d words / %d pages", words, pages)
+	count_text := fmt.ctprintf("Page %d · %d words / %d pages", current_page(app), words, pages)
 	count_w := rl.MeasureTextEx(app.fonts.ui, count_text, 18, 1)
-	rl.DrawTextEx(app.fonts.ui, count_text, rl.Vector2{f32(screen_w) - count_w.x - 24, f32(screen_h - 38)}, 18, 1, theme.foreground)
+	rl.DrawTextEx(app.fonts.ui, count_text, rl.Vector2{f32(screen_w) - count_w.x - 24, bar_y}, 18, 1, theme.foreground)
 }
 
 // Maps a screen point to a text index by replaying the same wrapping as draw_paragraph.
