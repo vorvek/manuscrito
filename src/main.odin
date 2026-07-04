@@ -12,7 +12,7 @@ import "core:strings"
 import "core:unicode"
 import "core:unicode/utf8"
 
-VERSION :: "1.0.1"
+VERSION :: "1.0.2"
 MAGIC :: "MANUSCRITO\t1"
 // Text lines per page in page view. With the 60-char column this lands near
 // 250 words, the usual novel manuscript page.
@@ -201,7 +201,9 @@ HELP_ENTRIES := [?]Help_Entry {
 	{"Ctrl+B / I / U",        "Bold / Italic / Underline"},
 	{"Ctrl+H",                "Highlight"},
 	{"Ctrl++ / - / 0",        "Zoom in / out / reset"},
+	{"Up / Down",             "Move by line"},
 	{"Ctrl+Left/Right",       "Move by word"},
+	{"Ctrl+Up / Down",        "Move by paragraph"},
 	{"Ctrl+Home/End",         "Jump to start/end of document"},
 	{"Ctrl+Wheel",            "Zoom"},
 	{"Tab",                   "Toggle first-line indent"},
@@ -566,10 +568,18 @@ handle_movement :: proc(app: ^App) {
 		move_cursor(app, next_word(app, app.cursor) if by_word else app.cursor + 1, selecting)
 	}
 	if pressed_or_repeat(.UP) {
-		move_cursor(app, prev_paragraph_column(app), selecting)
+		if by_word {
+			move_cursor(app, prev_paragraph_column(app), selecting)
+		} else {
+			move_visual_line(app, -1, selecting)
+		}
 	}
 	if pressed_or_repeat(.DOWN) {
-		move_cursor(app, next_paragraph_column(app), selecting)
+		if by_word {
+			move_cursor(app, next_paragraph_column(app), selecting)
+		} else {
+			move_visual_line(app, +1, selecting)
+		}
 	}
 	if pressed_or_repeat(.HOME) {
 		move_cursor(app, 0 if by_word else paragraph_start(app, paragraph_index_at(app, app.cursor)), selecting)
@@ -1161,6 +1171,102 @@ next_paragraph_column :: proc(app: ^App) -> int {
 	next_start := paragraph_start(app, p + 1)
 	next_end := paragraph_end(app, next_start)
 	return next_start + min(col, next_end - next_start)
+}
+
+// Layout facts for paragraph p at the current zoom and width.
+para_layout :: proc(app: ^App, p: int, content_w, base_size: f32) -> (start, end: int, font_size, indent: f32, starts: []int) {
+	start = paragraph_start(app, p)
+	end = paragraph_end(app, start)
+	para := app.paragraphs[p]
+	font_size = header_size(para.header, base_size)
+	indent = font_size * 2.25 if para.first_indent else 0
+	starts = paragraph_line_starts(app, start, end, content_w, indent, font_size)
+	return
+}
+
+// Absolute x of a caret index within one visual line. Forward companion to
+// index_in_visual_line, so the same alignment and justify math is used.
+visual_x_of_index :: proc(app: ^App, paragraph: Paragraph, start, end: int, left, available, font_size: f32, last_line: bool, target: int) -> f32 {
+	line_width := line_advance(app, start, end, font_size)
+	x := left
+	switch paragraph.align {
+	case .Center:
+		x += max((available - line_width) * 0.5, 0)
+	case .Right:
+		x += max(available - line_width, 0)
+	case .Left, .Justify:
+	case:
+	}
+	content_end, extra_space := justify_metrics(app, paragraph, start, end, available, line_width, font_size, last_line)
+	for i in start ..< end {
+		if i >= target {
+			break
+		}
+		adv := char_width(app, app.text[i], app.styles[i], font_size) + 2
+		if app.text[i] == ' ' && i < content_end {
+			adv += extra_space
+		}
+		x += adv
+	}
+	return x
+}
+
+// Up/Down move the caret one visual line, holding the horizontal position, across
+// wrapped lines and paragraph boundaries.
+// ponytail: the goal x is taken from the caret each press, so it drifts toward short
+// lines' ends over several moves; add a sticky goal column if that becomes annoying.
+move_visual_line :: proc(app: ^App, dir: int, selecting: bool) {
+	screen_w := f32(rl.GetScreenWidth())
+	base_size := f32(30) * app.zoom
+	content_w := min(max(screen_w - 112, 240), char_width(app, 'n', Char_Style{}, base_size) * 60)
+	left := (screen_w - content_w) * 0.5
+
+	p := paragraph_index_at(app, app.cursor)
+	_, end, font_size, indent, starts := para_layout(app, p, content_w, base_size)
+	L := 0
+	for k in 0 ..< len(starts) {
+		if starts[k] <= app.cursor {
+			L = k
+		} else {
+			break
+		}
+	}
+	ls := starts[L]
+	next := starts[L + 1] if L + 1 < len(starts) else end
+	line_indent := indent if L == 0 else 0
+	last := L + 1 >= len(starts)
+	goal_x := visual_x_of_index(app, app.paragraphs[p], ls, next, left + line_indent, content_w - line_indent, font_size, last, app.cursor)
+
+	tp := p
+	tend := end
+	tfont := font_size
+	tindent := indent
+	tstarts := starts
+	tL := L + dir
+	if tL < 0 {
+		if p == 0 {
+			move_cursor(app, 0, selecting)
+			return
+		}
+		tp = p - 1
+		_, tend, tfont, tindent, tstarts = para_layout(app, tp, content_w, base_size)
+		tL = len(tstarts) - 1
+	} else if tL >= len(starts) {
+		if p >= len(app.paragraphs) - 1 {
+			move_cursor(app, len(app.text), selecting)
+			return
+		}
+		tp = p + 1
+		_, tend, tfont, tindent, tstarts = para_layout(app, tp, content_w, base_size)
+		tL = 0
+	}
+	tls := tstarts[tL]
+	tnext := tstarts[tL + 1] if tL + 1 < len(tstarts) else tend
+	tline_indent := tindent if tL == 0 else 0
+	tlast := tL + 1 >= len(tstarts)
+	tlw := line_advance(app, tls, tnext, tfont)
+	idx := index_in_visual_line(app, app.paragraphs[tp], tls, tnext, left + tline_indent, content_w - tline_indent, tlw, tfont, tlast, goal_x)
+	move_cursor(app, idx, selecting)
 }
 
 paragraph_index_at :: proc(app: ^App, pos: int) -> int {
@@ -1859,33 +1965,25 @@ text_index_at_point :: proc(app: ^App, point: rl.Vector2) -> int {
 		line_h := font_size * 1.42
 		indent := font_size * 2.25 if paragraph.first_indent else 0
 		y = page_snap(y, line_h, page_h, period)
-		line_start := start
-		line_width: f32
-		first_line := true
-		i := start
-		for i < end {
-			available := content_w - (indent if first_line else 0)
-			w := char_width(app, app.text[i], app.styles[i], font_size) + 2
-			if line_width + w > available && line_start < i {
-				if py < y + line_h {
-					return index_in_visual_line(app, paragraph, line_start, i, left + (indent if first_line else 0), available, line_width, font_size, false, point.x)
-				}
-				y += line_h
-				y = page_snap(y, line_h, page_h, period)
-				line_start = i
-				line_width = 0
-				first_line = false
-				continue
+		starts := paragraph_line_starts(app, start, end, content_w, indent, font_size)
+		for ls, k in starts {
+			next := starts[k + 1] if k + 1 < len(starts) else end
+			last := k + 1 >= len(starts)
+			line_indent := indent if k == 0 else 0
+			available := content_w - line_indent
+			lw := line_advance(app, ls, next, font_size)
+			// The last visual line owns the gap below it, so it hit-tests taller.
+			line_bottom := y + (line_h * 1.25 if last else line_h)
+			if py < line_bottom {
+				return index_in_visual_line(app, paragraph, ls, next, left + line_indent, available, lw, font_size, last, point.x)
 			}
-			line_width += w
-			i += 1
+			if last {
+				y += line_h * 1.25
+				break
+			}
+			y += line_h
+			y = page_snap(y, line_h, page_h, period)
 		}
-		// Last visual line of the paragraph, including the gap below it.
-		if py < y + line_h * 1.25 {
-			available := content_w - (indent if first_line else 0)
-			return index_in_visual_line(app, paragraph, line_start, end, left + (indent if first_line else 0), available, line_width, font_size, true, point.x)
-		}
-		y += line_h * 1.25
 		start = end + 1
 		if p == len(app.paragraphs) - 1 {
 			break
@@ -1906,18 +2004,10 @@ index_in_visual_line :: proc(app: ^App, paragraph: Paragraph, start, end: int, l
 	case .Left, .Justify:
 	case:
 	}
-	space_count := 0
-	if paragraph.align == .Justify && !last_line {
-		for i in start..<end {
-			if app.text[i] == ' ' {
-				space_count += 1
-			}
-		}
-	}
-	extra_space := max(available - line_width, 0) / f32(space_count) if space_count > 0 else 0
+	content_end, extra_space := justify_metrics(app, paragraph, start, end, available, line_width, font_size, last_line)
 	for i in start..<end {
 		adv := char_width(app, app.text[i], app.styles[i], font_size) + 2
-		if app.text[i] == ' ' {
+		if app.text[i] == ' ' && i < content_end {
 			adv += extra_space
 		}
 		if px < x + adv * 0.5 {
@@ -1982,23 +2072,20 @@ cursor_document_y :: proc(app: ^App, width, base_size: f32) -> f32 {
 		line_h := font_size * 1.42
 		indent := font_size * 2.25 if paragraph.first_indent else 0
 		y = page_snap(y, line_h, page_h, period)
-		line_width: f32
-		first_line := true
-		i := start
 		if app.cursor <= start {
 			return y
 		}
-		for i < min(end, app.cursor) {
-			available := width - (indent if first_line else 0)
-			w := char_width(app, app.text[i], app.styles[i], font_size) + 2
-			if line_width + w > available && line_width > 0 {
+		starts := paragraph_line_starts(app, start, end, width, indent, font_size)
+		for ls, k in starts {
+			next := starts[k + 1] if k + 1 < len(starts) else end
+			// Cursor sits on this line when it falls before the next line's start.
+			if app.cursor < next {
+				break
+			}
+			if k + 1 < len(starts) {
 				y += line_h
 				y = page_snap(y, line_h, page_h, period)
-				line_width = 0
-				first_line = false
 			}
-			line_width += w
-			i += 1
 		}
 		if app.cursor <= end {
 			return y
@@ -2024,18 +2111,12 @@ document_bottom :: proc(app: ^App, width, base_size: f32) -> f32 {
 		line_h := font_size * 1.42
 		indent := font_size * 2.25 if paragraph.first_indent else 0
 		y = page_snap(y, line_h, page_h, period)
-		line_width: f32
-		first_line := true
-		for i in start..<end {
-			available := width - (indent if first_line else 0)
-			w := char_width(app, app.text[i], app.styles[i], font_size) + 2
-			if line_width + w > available && line_width > 0 {
+		starts := paragraph_line_starts(app, start, end, width, indent, font_size)
+		for _, k in starts {
+			if k + 1 < len(starts) {
 				y += line_h
 				y = page_snap(y, line_h, page_h, period)
-				line_width = 0
-				first_line = false
 			}
-			line_width += w
 		}
 		last_line_h = line_h
 		if p == len(app.paragraphs) - 1 {
@@ -2047,38 +2128,159 @@ document_bottom :: proc(app: ^App, width, base_size: f32) -> f32 {
 	return y + last_line_h
 }
 
+// Minimum-raggedness line breaking (the Knuth-Plass idea, ragged variant): choose
+// the break points that minimize the sum of squared leftover space per line, so the
+// right edge is even instead of greedily filled. The last line is free (a short last
+// line is fine). Pure numeric core over word widths so it stays exact and testable.
+//
+// word_start_prefix[k] / word_end_prefix[k] are cumulative advances at the first and
+// last char of word k, so the width of words i..j-1 on one line is
+// word_end_prefix[j-1] - word_start_prefix[i] (inter-word spaces included, trailing
+// space excluded). first_avail applies to the line holding word 0 (first-line indent);
+// full_avail to the rest. Returns the word index that begins each line (word 0 first).
+min_raggedness_breaks :: proc(word_start_prefix, word_end_prefix: []f32, full_avail, first_avail: f32) -> []int {
+	W := len(word_start_prefix)
+	if W == 0 {
+		return {}
+	}
+	INF :: 1e30
+	best := make([]f64, W + 1, context.temp_allocator)
+	prev := make([]int, W + 1, context.temp_allocator)
+	for k in 1 ..= W {
+		best[k] = INF
+	}
+	best[0] = 0
+	for j in 1 ..= W {
+		// Try each line ending at word j-1 and starting at word i, widening as i
+		// walks back until the line no longer fits.
+		i := j - 1
+		for i >= 0 {
+			avail := f64(first_avail if i == 0 else full_avail)
+			w := f64(word_end_prefix[j - 1] - word_start_prefix[i])
+			if w > avail {
+				// A single word wider than the line is forced onto its own line;
+				// anything longer only gets wider, so stop walking back.
+				if j - i == 1 && best[i] < best[j] {
+					best[j] = best[i]
+					prev[j] = i
+				}
+				break
+			}
+			slack := avail - w
+			cost := 0.0 if j == W else slack * slack
+			if best[i] + cost < best[j] {
+				best[j] = best[i] + cost
+				prev[j] = i
+			}
+			i -= 1
+		}
+	}
+	starts := make([dynamic]int, context.temp_allocator)
+	for j := W; j > 0; j = prev[j] {
+		append(&starts, prev[j])
+	}
+	slice.reverse(starts[:])
+	return starts[:]
+}
+
+// Char indices where each visual line of the paragraph begins (first element is
+// always `start`), laid out with min_raggedness_breaks. Recomputed per call.
+// ponytail: O(words) per call, re-run every frame for every paragraph; cache per
+// paragraph keyed on text+width if large documents ever lag.
+paragraph_line_starts :: proc(app: ^App, start, end: int, width, indent, font_size: f32) -> []int {
+	result := make([dynamic]int, context.temp_allocator)
+	append(&result, start)
+	if start >= end {
+		return result[:]
+	}
+	// Scan words (maximal non-space runs) and record cumulative advances at each
+	// word's first and last char.
+	word_first := make([dynamic]int, context.temp_allocator)
+	start_prefix := make([dynamic]f32, context.temp_allocator)
+	end_prefix := make([dynamic]f32, context.temp_allocator)
+	prefix: f32
+	in_word := false
+	for i in start ..< end {
+		if app.text[i] != ' ' && !in_word {
+			append(&word_first, i)
+			append(&start_prefix, prefix)
+			in_word = true
+		}
+		prefix += char_width(app, app.text[i], app.styles[i], font_size) + 2
+		if in_word && (i + 1 >= end || app.text[i + 1] == ' ') {
+			append(&end_prefix, prefix)
+			in_word = false
+		}
+	}
+	if len(word_first) == 0 {
+		return result[:] // paragraph is only spaces: one line
+	}
+	word_lines := min_raggedness_breaks(start_prefix[:], end_prefix[:], width, width - indent)
+	for wi, k in word_lines {
+		if k > 0 {
+			append(&result, word_first[wi])
+		}
+	}
+	return result[:]
+}
+
+// Total advance of the chars in [a, b), trailing space included.
+line_advance :: proc(app: ^App, a, b: int, font_size: f32) -> f32 {
+	w: f32
+	for i in a ..< b {
+		w += char_width(app, app.text[i], app.styles[i], font_size) + 2
+	}
+	return w
+}
+
+// Justify stretches the spaces to fill the line, but a wrapped line ends with the
+// space that pushed the next word down; that trailing space is trimmed so the last
+// word reaches the right margin. Returns the index past the last stretched char and
+// the extra width to add to each interior space.
+justify_metrics :: proc(app: ^App, paragraph: Paragraph, start, end: int, available, line_width, font_size: f32, last_line: bool) -> (content_end: int, extra_space: f32) {
+	content_end = end
+	if paragraph.align != .Justify || last_line {
+		return end, 0
+	}
+	for content_end > start && app.text[content_end - 1] == ' ' {
+		content_end -= 1
+	}
+	space_count := 0
+	for i in start ..< content_end {
+		if app.text[i] == ' ' {
+			space_count += 1
+		}
+	}
+	if space_count == 0 {
+		return content_end, 0
+	}
+	trimmed := line_width
+	for i in content_end ..< end {
+		trimmed -= char_width(app, app.text[i], app.styles[i], font_size) + 2
+	}
+	return content_end, max(available - trimmed, 0) / f32(space_count)
+}
+
 // y is in document space; origin converts to screen coordinates at draw time.
 draw_paragraph :: proc(app: ^App, theme: Theme, paragraph: Paragraph, start, end: int, left, origin, y, width, base_size, page_h, period: f32) -> f32 {
 	font_size := header_size(paragraph.header, base_size)
 	line_h := font_size * 1.42
 	indent := font_size * 2.25 if paragraph.first_indent else 0
 	yy := page_snap(y, line_h, page_h, period)
-	line_start := start
-	line_width: f32
-	first_line := true
-	i := start
-
-	if start == end {
-		draw_visual_line(app, theme, paragraph, start, end, left + indent, origin + yy, width - indent, 0, font_size, line_h, true)
-		return yy + line_h * 1.25
-	}
-
-	for i < end {
-		available := width - (indent if first_line else 0)
-		w := char_width(app, app.text[i], app.styles[i], font_size) + 2
-		if line_width + w > available && line_start < i {
-			draw_visual_line(app, theme, paragraph, line_start, i, left + (indent if first_line else 0), origin + yy, available, line_width, font_size, line_h, false)
-			yy += line_h
-			yy = page_snap(yy, line_h, page_h, period)
-			line_start = i
-			line_width = 0
-			first_line = false
-			continue
+	starts := paragraph_line_starts(app, start, end, width, indent, font_size)
+	for ls, k in starts {
+		next := starts[k + 1] if k + 1 < len(starts) else end
+		last := k + 1 >= len(starts)
+		line_indent := indent if k == 0 else 0
+		available := width - line_indent
+		lw := line_advance(app, ls, next, font_size)
+		draw_visual_line(app, theme, paragraph, ls, next, left + line_indent, origin + yy, available, lw, font_size, line_h, last)
+		if last {
+			break
 		}
-		line_width += w
-		i += 1
+		yy += line_h
+		yy = page_snap(yy, line_h, page_h, period)
 	}
-	draw_visual_line(app, theme, paragraph, line_start, end, left + (indent if first_line else 0), origin + yy, width - (indent if first_line else 0), line_width, font_size, line_h, true)
 	return yy + line_h * 1.25
 }
 
@@ -2093,15 +2295,7 @@ draw_visual_line :: proc(app: ^App, theme: Theme, paragraph: Paragraph, start, e
 	case:
 	}
 
-	space_count := 0
-	if paragraph.align == .Justify && !last_line {
-		for i in start..<end {
-			if app.text[i] == ' ' {
-				space_count += 1
-			}
-		}
-	}
-	extra_space := max(available - line_width, 0) / f32(space_count) if space_count > 0 else 0
+	content_end, extra_space := justify_metrics(app, paragraph, start, end, available, line_width, font_size, last_line)
 	lo, hi := selection_range(app)
 
 	// Marker highlight goes under the glyphs and the selection tint. The +1 on the
@@ -2109,7 +2303,7 @@ draw_visual_line :: proc(app: ^App, theme: Theme, paragraph: Paragraph, start, e
 	hx := x
 	for i in start..<end {
 		adv := char_width(app, app.text[i], app.styles[i], font_size) + 2
-		if app.text[i] == ' ' {
+		if app.text[i] == ' ' && i < content_end {
 			adv += extra_space
 		}
 		if app.styles[i].highlight {
@@ -2124,7 +2318,7 @@ draw_visual_line :: proc(app: ^App, theme: Theme, paragraph: Paragraph, start, e
 		sel_x0, sel_x1: f32 = -1, -1
 		for i in start..<end {
 			adv := char_width(app, app.text[i], app.styles[i], font_size) + 2
-			if app.text[i] == ' ' {
+			if app.text[i] == ' ' && i < content_end {
 				adv += extra_space
 			}
 			if i >= lo && i < hi {
@@ -2160,7 +2354,7 @@ draw_visual_line :: proc(app: ^App, theme: Theme, paragraph: Paragraph, start, e
 			ul_x0 = -1
 		}
 		x += w + 2
-		if ch == ' ' {
+		if ch == ' ' && i < content_end {
 			x += extra_space
 		}
 		if app.cursor == i + 1 && !app.palette_open {

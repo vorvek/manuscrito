@@ -2,7 +2,7 @@
 
 Distraction-free writing app for Windows, Linux, and macOS, built with Odin and Raylib. ![GitHub License](https://img.shields.io/github/license/vorvek/manuscrito) 
 
-<img width="403" height="600" alt="image" src="https://github.com/user-attachments/assets/13f7ed35-a095-4b7d-bbb8-3390d527db0a" />
+<img height="340" alt="Manuscrito" src="https://github.com/user-attachments/assets/13f7ed35-a095-4b7d-bbb8-3390d527db0a" /> <img height="340" alt="Page view" src="screenshot.png" />
 
 
 ## Build
@@ -17,7 +17,7 @@ Windows users can run `.\build.ps1`; Linux/macOS users can run `./build.sh`.
 
 - Type to write.
 - `Backspace` and `Delete` delete; `Enter` inserts a new line.
-- `Arrow` keys move the cursor; `Ctrl+Left/Right` moves by word.
+- `Arrow` keys move the cursor; `Ctrl+Left/Right` moves by word; `Ctrl+Up/Down` moves by paragraph.
 - `Home`/`End` jump to the start or end of the paragraph; `Ctrl+Home/End` to the start or end of the document.
 - `Shift` with any movement key selects text; `Ctrl+A` selects everything.
 - `Ctrl+Z` undoes; `Ctrl+Shift+Z` redoes.
