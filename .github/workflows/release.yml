@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: windows-amd64
+          - os: ubuntu-latest
+            target: linux-amd64
+          - os: macos-13
+            target: macos-amd64
+          - os: macos-14
+            target: macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: laytan/setup-odin@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          release: dev-2026-04
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: odin build src -out:manuscrito.exe -subsystem:windows -o:speed
+
+      - name: Build (Unix)
+        if: runner.os != 'Windows'
+        run: odin build src -out:manuscrito -o:speed
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ver = "${{ github.ref_name }}" -replace '^v', ''
+          $stage = "manuscrito-$ver-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force dist, $stage | Out-Null
+          Copy-Item manuscrito.exe, LICENSE, README.md $stage
+          Compress-Archive -Path $stage -DestinationPath "dist/$stage.zip"
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          stage="manuscrito-$ver-${{ matrix.target }}"
+          mkdir -p dist "$stage"
+          cp manuscrito LICENSE README.md "$stage"/
+          chmod +x "$stage/manuscrito"
+          tar -czf "dist/$stage.tar.gz" "$stage"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body: Initial release
+          files: dist/*
