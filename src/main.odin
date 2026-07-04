@@ -3,6 +3,7 @@ package main
 import rl "vendor:raylib"
 import "core:c"
 import "core:fmt"
+import "core:math"
 import "core:os"
 import "core:path/filepath"
 import "core:slice"
@@ -11,7 +12,11 @@ import "core:strings"
 import "core:unicode"
 import "core:unicode/utf8"
 
+VERSION :: "1.0.0"
 MAGIC :: "MANUSCRITO\t1"
+// Text lines per page in page view. With the 60-char column this lands near
+// 250 words, the usual novel manuscript page.
+PAGE_LINES :: 25
 SPLASH_JPG :: #load("scriptorium.jpg")
 EB_GARAMOND_REGULAR :: #load("fonts/EBGaramond-Regular.ttf")
 EB_GARAMOND_ITALIC :: #load("fonts/EBGaramond-Italic.ttf")
@@ -29,6 +34,7 @@ Path_Action :: enum int {
 	None,
 	Save_As,
 	Open,
+	Find,
 }
 
 Palette_Mode :: enum int {
@@ -40,6 +46,9 @@ Command_Kind :: enum int {
 	Save,
 	Save_As,
 	Open,
+	New,
+	Find,
+	Select_All,
 	Undo,
 	Redo,
 	Copy,
@@ -48,6 +57,7 @@ Command_Kind :: enum int {
 	Bold,
 	Italic,
 	Underline,
+	Highlight,
 	Header_1,
 	Header_2,
 	Header_3,
@@ -61,6 +71,7 @@ Command_Kind :: enum int {
 	Zoom_Reset,
 	First_Line_Indent,
 	Keep_Cursor_Centered,
+	Page_View,
 	Theme_Cycle,
 	Quit,
 }
@@ -85,12 +96,14 @@ Style_Field :: enum int {
 	Bold,
 	Italic,
 	Underline,
+	Highlight,
 }
 
 Char_Style :: struct {
 	bold:      bool,
 	italic:    bool,
 	underline: bool,
+	highlight: bool,
 }
 
 Paragraph :: struct {
@@ -109,6 +122,7 @@ Theme :: struct {
 	accent:      rl.Color,
 	selection:   rl.Color,
 	page:        rl.Color,
+	highlight:   rl.Color,
 }
 
 Fonts :: struct {
@@ -152,37 +166,46 @@ App :: struct {
 	theme_index:      int,
 	zoom:             f32,
 	scroll_y:         f32,
+	scroll_target:    f32,
 	keep_cursor_centered: bool,
+	show_pages:       bool,
+	mouse_selecting:  bool,
+	wheel_accum:      f32,
 	dirty:            bool,
 	show_splash:      bool,
 	splash:           rl.Texture2D,
 	splash_loaded:    bool,
 	quit:             bool,
+	confirm_pending:  bool,
+	confirm_kind:     Command_Kind,
 	status:           cstring,
 	fonts:            Fonts,
 }
 
-// Fields: name, background, foreground, muted, panel, border, accent, selection, page.
+// Fields: name, background, foreground, muted, panel, border, accent, selection, page, highlight.
 THEMES := [?]Theme {
 	// Light
-	{"Paper",    rl.Color{248, 246, 239, 255}, rl.Color{31, 33, 36, 255},   rl.Color{130, 126, 116, 255}, rl.Color{255, 253, 247, 245}, rl.Color{205, 199, 188, 255}, rl.Color{41, 103, 92, 255},  rl.Color{191, 221, 214, 160}, rl.Color{255, 254, 249, 255}},
-	{"Sepia",    rl.Color{237, 224, 200, 255}, rl.Color{60, 44, 30, 255},   rl.Color{140, 120, 95, 255},  rl.Color{247, 236, 214, 245}, rl.Color{206, 188, 158, 255}, rl.Color{150, 90, 40, 255},  rl.Color{219, 197, 158, 160}, rl.Color{247, 237, 217, 255}},
-	{"Daylight", rl.Color{247, 249, 252, 255}, rl.Color{28, 34, 42, 255},   rl.Color{120, 132, 148, 255}, rl.Color{255, 255, 255, 245}, rl.Color{206, 214, 226, 255}, rl.Color{40, 110, 200, 255}, rl.Color{190, 214, 244, 160}, rl.Color{255, 255, 255, 255}},
-	{"Mint",     rl.Color{240, 247, 242, 255}, rl.Color{26, 40, 34, 255},   rl.Color{116, 140, 128, 255}, rl.Color{250, 255, 252, 245}, rl.Color{200, 220, 208, 255}, rl.Color{34, 130, 96, 255},  rl.Color{194, 226, 210, 160}, rl.Color{250, 255, 252, 255}},
+	{"Paper",    rl.Color{248, 246, 239, 255}, rl.Color{31, 33, 36, 255},   rl.Color{130, 126, 116, 255}, rl.Color{255, 253, 247, 245}, rl.Color{205, 199, 188, 255}, rl.Color{41, 103, 92, 255},  rl.Color{191, 221, 214, 160}, rl.Color{255, 254, 249, 255}, rl.Color{247, 222, 116, 255}},
+	{"Sepia",    rl.Color{237, 224, 200, 255}, rl.Color{60, 44, 30, 255},   rl.Color{140, 120, 95, 255},  rl.Color{247, 236, 214, 245}, rl.Color{206, 188, 158, 255}, rl.Color{150, 90, 40, 255},  rl.Color{219, 197, 158, 160}, rl.Color{247, 237, 217, 255}, rl.Color{231, 196, 100, 255}},
+	{"Daylight", rl.Color{247, 249, 252, 255}, rl.Color{28, 34, 42, 255},   rl.Color{120, 132, 148, 255}, rl.Color{255, 255, 255, 245}, rl.Color{206, 214, 226, 255}, rl.Color{40, 110, 200, 255}, rl.Color{190, 214, 244, 160}, rl.Color{255, 255, 255, 255}, rl.Color{250, 229, 120, 255}},
+	{"Mint",     rl.Color{240, 247, 242, 255}, rl.Color{26, 40, 34, 255},   rl.Color{116, 140, 128, 255}, rl.Color{250, 255, 252, 245}, rl.Color{200, 220, 208, 255}, rl.Color{34, 130, 96, 255},  rl.Color{194, 226, 210, 160}, rl.Color{250, 255, 252, 255}, rl.Color{236, 228, 122, 255}},
 	// Dark
-	{"Night",    rl.Color{19, 22, 26, 255},    rl.Color{229, 231, 235, 255}, rl.Color{137, 146, 158, 255}, rl.Color{31, 36, 42, 245},   rl.Color{73, 84, 96, 255},    rl.Color{122, 178, 255, 255}, rl.Color{52, 88, 134, 170},  rl.Color{27, 31, 37, 255}},
-	{"Nord",     rl.Color{46, 52, 64, 255},    rl.Color{216, 222, 233, 255}, rl.Color{136, 146, 167, 255}, rl.Color{59, 66, 82, 245},   rl.Color{76, 86, 106, 255},   rl.Color{136, 192, 208, 255}, rl.Color{67, 76, 94, 180},   rl.Color{56, 63, 77, 255}},
-	{"Dracula",  rl.Color{40, 42, 54, 255},    rl.Color{248, 248, 242, 255}, rl.Color{140, 144, 160, 255}, rl.Color{54, 57, 74, 245},   rl.Color{68, 71, 90, 255},    rl.Color{189, 147, 249, 255}, rl.Color{68, 71, 110, 180},  rl.Color{52, 55, 70, 255}},
-	{"Gruvbox",  rl.Color{40, 40, 40, 255},    rl.Color{235, 219, 178, 255}, rl.Color{168, 153, 132, 255}, rl.Color{60, 56, 54, 245},   rl.Color{80, 73, 69, 255},    rl.Color{215, 153, 33, 255},  rl.Color{80, 73, 69, 180},   rl.Color{50, 48, 46, 255}},
+	{"Night",    rl.Color{19, 22, 26, 255},    rl.Color{229, 231, 235, 255}, rl.Color{137, 146, 158, 255}, rl.Color{31, 36, 42, 245},   rl.Color{73, 84, 96, 255},    rl.Color{122, 178, 255, 255}, rl.Color{52, 88, 134, 170},  rl.Color{27, 31, 37, 255},   rl.Color{102, 82, 26, 255}},
+	{"Nord",     rl.Color{46, 52, 64, 255},    rl.Color{216, 222, 233, 255}, rl.Color{136, 146, 167, 255}, rl.Color{59, 66, 82, 245},   rl.Color{76, 86, 106, 255},   rl.Color{136, 192, 208, 255}, rl.Color{67, 76, 94, 180},   rl.Color{56, 63, 77, 255},   rl.Color{110, 96, 46, 255}},
+	{"Dracula",  rl.Color{40, 42, 54, 255},    rl.Color{248, 248, 242, 255}, rl.Color{140, 144, 160, 255}, rl.Color{54, 57, 74, 245},   rl.Color{68, 71, 90, 255},    rl.Color{189, 147, 249, 255}, rl.Color{68, 71, 110, 180},  rl.Color{52, 55, 70, 255},   rl.Color{112, 96, 40, 255}},
+	{"Gruvbox",  rl.Color{40, 40, 40, 255},    rl.Color{235, 219, 178, 255}, rl.Color{168, 153, 132, 255}, rl.Color{60, 56, 54, 245},   rl.Color{80, 73, 69, 255},    rl.Color{215, 153, 33, 255},  rl.Color{80, 73, 69, 180},   rl.Color{50, 48, 46, 255},   rl.Color{112, 88, 22, 255}},
 	// High contrast
-	{"Contrast Dark",  rl.Color{0, 0, 0, 255},       rl.Color{255, 255, 255, 255}, rl.Color{180, 180, 180, 255}, rl.Color{16, 16, 16, 255},    rl.Color{140, 140, 140, 255}, rl.Color{255, 234, 0, 255},   rl.Color{0, 90, 200, 220},   rl.Color{16, 16, 16, 255}},
-	{"Contrast Light", rl.Color{255, 255, 255, 255}, rl.Color{0, 0, 0, 255},       rl.Color{80, 80, 80, 255},    rl.Color{245, 245, 245, 255}, rl.Color{60, 60, 60, 255},    rl.Color{0, 40, 200, 255},    rl.Color{150, 190, 255, 200}, rl.Color{248, 248, 248, 255}},
+	{"Contrast Dark",  rl.Color{0, 0, 0, 255},       rl.Color{255, 255, 255, 255}, rl.Color{180, 180, 180, 255}, rl.Color{16, 16, 16, 255},    rl.Color{140, 140, 140, 255}, rl.Color{255, 234, 0, 255},   rl.Color{0, 90, 200, 220},   rl.Color{16, 16, 16, 255},   rl.Color{96, 84, 0, 255}},
+	{"Contrast Light", rl.Color{255, 255, 255, 255}, rl.Color{0, 0, 0, 255},       rl.Color{80, 80, 80, 255},    rl.Color{245, 245, 245, 255}, rl.Color{60, 60, 60, 255},    rl.Color{0, 40, 200, 255},    rl.Color{150, 190, 255, 200}, rl.Color{248, 248, 248, 255}, rl.Color{255, 235, 59, 255}},
 }
 
 COMMANDS := [?]Command {
 	{"Save", .Save},
 	{"Save As...", .Save_As},
 	{"Open...", .Open},
+	{"New", .New},
+	{"Find...", .Find},
+	{"Select All", .Select_All},
 	{"Undo", .Undo},
 	{"Redo", .Redo},
 	{"Copy", .Copy},
@@ -191,6 +214,7 @@ COMMANDS := [?]Command {
 	{"Bold", .Bold},
 	{"Italics", .Italic},
 	{"Underline", .Underline},
+	{"Highlight", .Highlight},
 	{"Header 1", .Header_1},
 	{"Header 2", .Header_2},
 	{"Header 3", .Header_3},
@@ -204,6 +228,7 @@ COMMANDS := [?]Command {
 	{"Zoom Reset", .Zoom_Reset},
 	{"First Line Indent", .First_Line_Indent},
 	{"Keep Cursor Centered Vertically", .Keep_Cursor_Centered},
+	{"Page View", .Page_View},
 	{"Theme: Next", .Theme_Cycle},
 	{"Quit", .Quit},
 }
@@ -261,9 +286,18 @@ main :: proc() {
 		delete(app.redo)
 		delete(app.palette_query)
 		delete(app.recent)
+		if len(app.file_path) > 0 {
+			delete(app.file_path)
+		}
 	}
 
-	for !app.quit && !rl.WindowShouldClose() {
+	for !app.quit {
+		if rl.WindowShouldClose() {
+			execute_command(&app, .Quit)
+			if app.quit {
+				break
+			}
+		}
 		update(&app)
 		draw(&app)
 		free_all(context.temp_allocator)
@@ -359,8 +393,41 @@ update :: proc(app: ^App) {
 	if handle_shortcuts(app) {
 		return
 	}
+	handle_mouse(app)
 	handle_movement(app)
 	handle_editing(app)
+}
+
+handle_mouse :: proc(app: ^App) {
+	if rl.IsMouseButtonReleased(.LEFT) {
+		app.mouse_selecting = false
+	}
+	if rl.IsMouseButtonPressed(.LEFT) {
+		// Ignore clicks on the status bar.
+		if rl.GetMousePosition().y > f32(rl.GetScreenHeight() - 52) {
+			return
+		}
+		app.mouse_selecting = true
+		move_cursor(app, text_index_at_point(app, rl.GetMousePosition()), shift_down())
+	} else if app.mouse_selecting && rl.IsMouseButtonDown(.LEFT) {
+		move_cursor(app, text_index_at_point(app, rl.GetMousePosition()), true)
+	}
+	// Ctrl+wheel zooms with the same limits as the zoom commands.
+	if ctrl_down() {
+		app.zoom = clamp(app.zoom + rl.GetMouseWheelMove() * 0.1, 0.5, 2.5)
+		return
+	}
+	// The wheel moves the cursor by paragraph; the view follows it as with any
+	// other movement. Fractional touchpad deltas accumulate until a whole step.
+	app.wheel_accum += rl.GetMouseWheelMove()
+	for app.wheel_accum >= 1 {
+		move_cursor(app, prev_paragraph_column(app), shift_down())
+		app.wheel_accum -= 1
+	}
+	for app.wheel_accum <= -1 {
+		move_cursor(app, next_paragraph_column(app), shift_down())
+		app.wheel_accum += 1
+	}
 }
 
 splash_dismissed :: proc() -> bool {
@@ -386,6 +453,18 @@ handle_shortcuts :: proc(app: ^App) -> bool {
 	}
 	if rl.IsKeyPressed(.O) {
 		execute_command(app, .Open)
+		return true
+	}
+	if rl.IsKeyPressed(.N) {
+		execute_command(app, .New)
+		return true
+	}
+	if rl.IsKeyPressed(.F) {
+		execute_command(app, .Find)
+		return true
+	}
+	if rl.IsKeyPressed(.A) {
+		execute_command(app, .Select_All)
 		return true
 	}
 	if rl.IsKeyPressed(.Z) {
@@ -414,6 +493,10 @@ handle_shortcuts :: proc(app: ^App) -> bool {
 	}
 	if rl.IsKeyPressed(.U) {
 		execute_command(app, .Underline)
+		return true
+	}
+	if rl.IsKeyPressed(.H) {
+		execute_command(app, .Highlight)
 		return true
 	}
 	if rl.IsKeyPressed(.EQUAL) || rl.IsKeyPressed(.KP_ADD) {
@@ -446,6 +529,12 @@ handle_movement :: proc(app: ^App) {
 	if pressed_or_repeat(.DOWN) {
 		move_cursor(app, next_paragraph_column(app), selecting)
 	}
+	if pressed_or_repeat(.HOME) {
+		move_cursor(app, 0 if by_word else paragraph_start(app, paragraph_index_at(app, app.cursor)), selecting)
+	}
+	if pressed_or_repeat(.END) {
+		move_cursor(app, len(app.text) if by_word else paragraph_end(app, paragraph_start(app, paragraph_index_at(app, app.cursor))), selecting)
+	}
 }
 
 handle_editing :: proc(app: ^App) {
@@ -460,6 +549,10 @@ handle_editing :: proc(app: ^App) {
 	if pressed_or_repeat(.BACKSPACE) && (app.cursor > 0 || has_selection(app)) {
 		begin_edit(app, .Delete)
 		backspace(app)
+	}
+	if pressed_or_repeat(.DELETE) && (app.cursor < len(app.text) || has_selection(app)) {
+		begin_edit(app, .Delete)
+		forward_delete(app)
 	}
 	if rl.IsKeyPressed(.ENTER) {
 		begin_edit(app, .Other)
@@ -606,12 +699,17 @@ update_path_prompt :: proc(app: ^App) {
 	}
 	if rl.IsKeyPressed(.ENTER) {
 		path := path_input_string(app)
+		defer delete(path)
 		if len(path) > 0 {
 			switch app.path_action {
 			case .Save_As:
 				save_document(app, path)
 			case .Open:
 				open_document(app, path)
+			case .Find:
+				// The prompt stays open so Enter jumps to the next match.
+				find_next(app, path)
+				return
 			case .None:
 			case:
 			}
@@ -632,11 +730,21 @@ update_path_prompt :: proc(app: ^App) {
 }
 
 execute_command :: proc(app: ^App, kind: Command_Kind) {
+	// Destructive commands need a second run to discard unsaved changes.
+	if app.dirty && (kind == .Quit || kind == .Open || kind == .New) &&
+	   (!app.confirm_pending || app.confirm_kind != kind) {
+		app.confirm_pending = true
+		app.confirm_kind = kind
+		app.palette_open = false
+		app.status = "Unsaved changes. Repeat the command to discard."
+		return
+	}
+	app.confirm_pending = false
 	if kind != .Theme_Cycle && kind != .Undo && kind != .Redo {
 		record_recent(app, kind)
 	}
 	#partial switch kind {
-	case .Cut, .Paste, .Bold, .Italic, .Underline, .Header_1 ..= .Header_4, .Align_Left ..= .Align_Justify, .First_Line_Indent:
+	case .Cut, .Paste, .Bold, .Italic, .Underline, .Highlight, .Header_1 ..= .Header_4, .Align_Left ..= .Align_Justify, .First_Line_Indent:
 		begin_edit(app, .Other)
 	}
 	switch kind {
@@ -651,6 +759,25 @@ execute_command :: proc(app: ^App, kind: Command_Kind) {
 		begin_path_prompt(app, .Save_As)
 	case .Open:
 		begin_path_prompt(app, .Open)
+	case .New:
+		clear_document(app)
+		clear_snapshots(&app.undo)
+		clear_snapshots(&app.redo)
+		app.last_edit = .Other
+		if len(app.file_path) > 0 {
+			delete(app.file_path)
+			app.file_path = ""
+		}
+		app.status = "New document"
+		app.palette_open = false
+	case .Find:
+		begin_path_prompt(app, .Find)
+	case .Select_All:
+		app.anchor = 0
+		app.cursor = len(app.text)
+		sync_active_style(app)
+		app.last_edit = .Other
+		app.palette_open = false
 	case .Undo:
 		undo(app)
 		app.palette_open = false
@@ -675,6 +802,9 @@ execute_command :: proc(app: ^App, kind: Command_Kind) {
 		app.palette_open = false
 	case .Underline:
 		toggle_style(app, .Underline)
+		app.palette_open = false
+	case .Highlight:
+		toggle_style(app, .Highlight)
 		app.palette_open = false
 	case .Header_1:
 		apply_header(app, 1)
@@ -714,6 +844,9 @@ execute_command :: proc(app: ^App, kind: Command_Kind) {
 		app.palette_open = false
 	case .Keep_Cursor_Centered:
 		app.keep_cursor_centered = !app.keep_cursor_centered
+		app.palette_open = false
+	case .Page_View:
+		app.show_pages = !app.show_pages
 		app.palette_open = false
 	case .Theme_Cycle:
 		app.theme_index = (app.theme_index + 1) % len(THEMES)
@@ -781,6 +914,7 @@ sync_active_style :: proc(app: ^App) {
 
 // Snapshot the document before an edit, coalescing runs of the same kind.
 begin_edit :: proc(app: ^App, kind: Edit_Kind) {
+	app.confirm_pending = false
 	if kind == .Other || app.last_edit != kind {
 		push_undo(app)
 	}
@@ -790,6 +924,7 @@ begin_edit :: proc(app: ^App, kind: Edit_Kind) {
 // Word-granular undo, like Word: start a new undo step at each word boundary so
 // Ctrl+Z peels off a word at a time rather than the whole typing burst.
 begin_typing_edit :: proc(app: ^App, ch: rune) {
+	app.confirm_pending = false
 	word_start := is_word(ch) && (app.cursor == 0 || !is_word(app.text[app.cursor - 1]))
 	if word_start || app.last_edit != .Insert {
 		push_undo(app)
@@ -1077,6 +1212,20 @@ backspace :: proc(app: ^App) {
 	app.dirty = true
 }
 
+forward_delete :: proc(app: ^App) {
+	if has_selection(app) {
+		delete_selection(app)
+		return
+	}
+	if app.cursor >= len(app.text) {
+		return
+	}
+	delete_range(app, app.cursor, app.cursor + 1)
+	app.anchor = app.cursor
+	sync_active_style(app)
+	app.dirty = true
+}
+
 insert_rune :: proc(app: ^App, ch: rune) {
 	if has_selection(app) {
 		delete_selection(app)
@@ -1104,30 +1253,63 @@ insert_rune_at :: proc(app: ^App, at: int, ch: rune, style: Char_Style) {
 toggle_style :: proc(app: ^App, field: Style_Field) {
 	if has_selection(app) {
 		lo, hi := selection_range(app)
+		// If any char lacks the style, apply it to the whole selection; otherwise clear it.
+		target := false
 		for i in lo..<hi {
-			toggle_style_field(&app.styles[i], field)
+			if !get_style_field(app.styles[i], field) {
+				target = true
+				break
+			}
+		}
+		for i in lo..<hi {
+			set_style_field(&app.styles[i], field, target)
 		}
 		app.dirty = true
 		return
 	}
-	toggle_style_field(&app.active_style, field)
+	set_style_field(&app.active_style, field, !get_style_field(app.active_style, field))
 }
 
-toggle_style_field :: proc(style: ^Char_Style, field: Style_Field) {
+get_style_field :: proc(style: Char_Style, field: Style_Field) -> bool {
 	switch field {
 	case .Bold:
-		style.bold = !style.bold
+		return style.bold
 	case .Italic:
-		style.italic = !style.italic
+		return style.italic
 	case .Underline:
-		style.underline = !style.underline
+		return style.underline
+	case .Highlight:
+		return style.highlight
+	}
+	return false
+}
+
+set_style_field :: proc(style: ^Char_Style, field: Style_Field, value: bool) {
+	switch field {
+	case .Bold:
+		style.bold = value
+	case .Italic:
+		style.italic = value
+	case .Underline:
+		style.underline = value
+	case .Highlight:
+		style.highlight = value
 	}
 }
 
 apply_header :: proc(app: ^App, level: int) {
 	first, last := selected_paragraphs(app)
+	// Applying the same level again returns the paragraphs to normal text.
+	all := true
 	for p in first..=last {
-		app.paragraphs[p].header = level
+		if app.paragraphs[p].header != level {
+			all = false
+			break
+		}
+	}
+	target := 0 if all else level
+	for p in first..=last {
+		app.paragraphs[p].header = target
 	}
 	app.dirty = true
 }
@@ -1142,8 +1324,15 @@ apply_align :: proc(app: ^App, align: Align) {
 
 apply_first_line_indent :: proc(app: ^App) {
 	first, last := selected_paragraphs(app)
+	all := true
 	for p in first..=last {
-		app.paragraphs[p].first_indent = true
+		if !app.paragraphs[p].first_indent {
+			all = false
+			break
+		}
+	}
+	for p in first..=last {
+		app.paragraphs[p].first_indent = !all
 	}
 	app.dirty = true
 }
@@ -1196,6 +1385,47 @@ clear_document :: proc(app: ^App) {
 	app.dirty = false
 }
 
+// Case-insensitive search from the cursor, wrapping around; selects the match.
+find_next :: proc(app: ^App, query: string) {
+	q := utf8.string_to_runes(query, context.temp_allocator)
+	if len(q) == 0 || len(q) > len(app.text) {
+		app.status = "Not found"
+		return
+	}
+	for i in 0..<len(q) {
+		q[i] = unicode.to_lower(q[i])
+	}
+	last := len(app.text) - len(q)
+	from := clamp(app.cursor, 0, len(app.text))
+	for k in 0..=last {
+		pos := (from + k) % (last + 1)
+		match := true
+		for j in 0..<len(q) {
+			if unicode.to_lower(app.text[pos + j]) != q[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			app.anchor = pos
+			app.cursor = pos + len(q)
+			sync_active_style(app)
+			app.last_edit = .Other
+			app.status = "Found"
+			return
+		}
+	}
+	app.status = "Not found"
+}
+
+set_file_path :: proc(app: ^App, path: string) {
+	new_path := strings.clone(path)
+	if len(app.file_path) > 0 {
+		delete(app.file_path)
+	}
+	app.file_path = new_path
+}
+
 open_document :: proc(app: ^App, path: string) {
 	data, err := os.read_entire_file(path, context.allocator)
 	if err != nil {
@@ -1205,13 +1435,18 @@ open_document :: proc(app: ^App, path: string) {
 	defer delete(data)
 
 	clear_document(app)
+	// The old document's undo history must not leak into the new file, or an
+	// undo followed by a save would overwrite it with the previous document.
+	clear_snapshots(&app.undo)
+	clear_snapshots(&app.redo)
+	app.last_edit = .Other
 	content := string(data)
 	if strings.has_prefix(content, MAGIC) {
 		parse_manuscrito(app, content)
 	} else {
 		load_plain_text(app, content)
 	}
-	app.file_path = strings.clone(path)
+	set_file_path(app, path)
 	app.cursor = len(app.text)
 	app.anchor = app.cursor
 	sync_active_style(app)
@@ -1273,7 +1508,7 @@ save_document :: proc(app: ^App, path: string) {
 	defer strings.builder_destroy(&sb)
 	serialize_document(app, &sb)
 	if os.write_entire_file(path, strings.to_string(sb)) == nil {
-		app.file_path = strings.clone(path)
+		set_file_path(app, path)
 		app.dirty = false
 		app.status = "Saved"
 	} else {
@@ -1386,7 +1621,7 @@ parse_align_or :: proc(text: string, fallback: Align) -> Align {
 }
 
 same_style :: proc(a, b: Char_Style) -> bool {
-	return a.bold == b.bold && a.italic == b.italic && a.underline == b.underline
+	return a.bold == b.bold && a.italic == b.italic && a.underline == b.underline && a.highlight == b.highlight
 }
 
 style_code :: proc(style: Char_Style) -> int {
@@ -1394,6 +1629,7 @@ style_code :: proc(style: Char_Style) -> int {
 	if style.bold { code |= 1 }
 	if style.italic { code |= 2 }
 	if style.underline { code |= 4 }
+	if style.highlight { code |= 8 }
 	return code
 }
 
@@ -1402,6 +1638,7 @@ style_from_code :: proc(code: int) -> Char_Style {
 		bold      = (code & 1) != 0,
 		italic    = (code & 2) != 0,
 		underline = (code & 4) != 0,
+		highlight = (code & 8) != 0,
 	}
 }
 
@@ -1468,7 +1705,7 @@ draw_splash :: proc(app: ^App, theme: Theme) {
 	rl.DrawRectangleLines(c.int(details_rect.x), c.int(details_rect.y), c.int(details_rect.width), c.int(details_rect.height), theme.border)
 	detail_size := f32(20)
 	line_y := details_rect.y + 20
-	draw_centered_text(app.fonts.ui, "Version 0.1.0", details_rect.x, line_y, details_rect.width, detail_size, rl.BLACK)
+	draw_centered_text(app.fonts.ui, "Version " + VERSION, details_rect.x, line_y, details_rect.width, detail_size, rl.BLACK)
 	draw_centered_text(app.fonts.ui, "by Jon Tamayo", details_rect.x, line_y + 26, details_rect.width, detail_size, rl.BLACK)
 	draw_centered_text(app.fonts.ui, "Copyright 2026", details_rect.x, line_y + 52, details_rect.width, detail_size, rl.BLACK)
 	draw_centered_text(app.fonts.ui, "GPL-3.0-only", details_rect.x, line_y + 78, details_rect.width, detail_size, rl.BLACK)
@@ -1504,9 +1741,29 @@ draw_document :: proc(app: ^App, theme: Theme) {
 	// The "page": a slightly different shade behind the text, padded on both sides.
 	page_pad := f32(44)
 	page_x := f32(margin_x) - page_pad
-	rl.DrawRectangle(c.int(max(page_x, 0)), 0, c.int(content_w + page_pad * 2), c.int(screen_h), theme.page)
 	ensure_cursor_visible(app, content_w, base_size, f32(screen_h - top - 96))
-	y := f32(top) - app.scroll_y
+	origin := f32(top) - app.scroll_y
+	page_h, period := page_metrics(app, base_size)
+	page_count := 0
+	if period > 0 {
+		// One rectangle per page, separated by bands of background.
+		pad := base_size * 1.2
+		last_page := int(math.floor(document_bottom(app, content_w, base_size) / period))
+		page_count = last_page + 1
+		for k in 0..=last_page {
+			ry := origin + f32(k) * period - pad
+			if ry > f32(screen_h) {
+				break
+			}
+			if ry + page_h + pad * 2 < 0 {
+				continue
+			}
+			rl.DrawRectangle(c.int(max(page_x, 0)), c.int(ry), c.int(content_w + page_pad * 2), c.int(page_h + pad * 2), theme.page)
+		}
+	} else {
+		rl.DrawRectangle(c.int(max(page_x, 0)), 0, c.int(content_w + page_pad * 2), c.int(screen_h), theme.page)
+	}
+	y: f32
 	start := 0
 
 	if len(app.text) == 0 {
@@ -1515,8 +1772,8 @@ draw_document :: proc(app: ^App, theme: Theme) {
 
 	for paragraph, p in app.paragraphs {
 		end := paragraph_end(app, start)
-		y = draw_paragraph(app, theme, paragraph, start, end, f32(margin_x), y, content_w, base_size)
-		if y > f32(screen_h - 96) {
+		y = draw_paragraph(app, theme, paragraph, start, end, f32(margin_x), origin, y, content_w, base_size, page_h, period)
+		if origin + y > f32(screen_h - 96) {
 			break
 		}
 		start = end + 1
@@ -1526,7 +1783,7 @@ draw_document :: proc(app: ^App, theme: Theme) {
 	}
 
 	status := app.status
-	if app.dirty {
+	if app.dirty && !app.confirm_pending {
 		status = "Unsaved changes"
 	}
 	rl.DrawRectangle(0, c.int(screen_h - 52), c.int(screen_w), 52, rl.ColorAlpha(theme.background, 0.92))
@@ -1534,27 +1791,26 @@ draw_document :: proc(app: ^App, theme: Theme) {
 	rl.DrawTextEx(app.fonts.ui, status, rl.Vector2{24, f32(screen_h - 38)}, 18, 1, theme.foreground)
 
 	words := count_words(app)
-	count_text := fmt.ctprintf("%d words / %d pages", words, (words + 249) / 250)
+	// Layout pages when page view is on, the word estimate otherwise.
+	pages := page_count if page_count > 0 else (words + 249) / 250
+	count_text := fmt.ctprintf("%d words / %d pages", words, pages)
 	count_w := rl.MeasureTextEx(app.fonts.ui, count_text, 18, 1)
 	rl.DrawTextEx(app.fonts.ui, count_text, rl.Vector2{f32(screen_w) - count_w.x - 24, f32(screen_h - 38)}, 18, 1, theme.foreground)
 }
 
-ensure_cursor_visible :: proc(app: ^App, width, base_size, viewport_h: f32) {
-	cursor_y := cursor_document_y(app, width, base_size)
-	if app.keep_cursor_centered {
-		app.scroll_y = max(cursor_y - viewport_h * 0.5, 0)
-		return
+// Maps a screen point to a text index by replaying the same wrapping as draw_paragraph.
+text_index_at_point :: proc(app: ^App, point: rl.Vector2) -> int {
+	screen_w := f32(rl.GetScreenWidth())
+	screen_h := int(rl.GetScreenHeight())
+	top := max(48, screen_h / 9)
+	base_size := f32(30) * app.zoom
+	content_w := min(max(screen_w - 112, 240), char_width(app, 'n', Char_Style{}, base_size) * 60)
+	left := (screen_w - content_w) * 0.5
+	py := point.y - (f32(top) - app.scroll_y)
+	if py < 0 {
+		return 0
 	}
-	if cursor_y - app.scroll_y > viewport_h {
-		app.scroll_y = cursor_y - viewport_h
-	}
-	if cursor_y - app.scroll_y < 0 {
-		app.scroll_y = cursor_y
-	}
-	app.scroll_y = max(app.scroll_y, 0)
-}
-
-cursor_document_y :: proc(app: ^App, width, base_size: f32) -> f32 {
+	page_h, period := page_metrics(app, base_size)
 	y: f32
 	start := 0
 	for paragraph, p in app.paragraphs {
@@ -1562,6 +1818,130 @@ cursor_document_y :: proc(app: ^App, width, base_size: f32) -> f32 {
 		font_size := header_size(paragraph.header, base_size)
 		line_h := font_size * 1.42
 		indent := font_size * 2.25 if paragraph.first_indent else 0
+		y = page_snap(y, line_h, page_h, period)
+		line_start := start
+		line_width: f32
+		first_line := true
+		i := start
+		for i < end {
+			available := content_w - (indent if first_line else 0)
+			w := char_width(app, app.text[i], app.styles[i], font_size) + 2
+			if line_width + w > available && line_start < i {
+				if py < y + line_h {
+					return index_in_visual_line(app, paragraph, line_start, i, left + (indent if first_line else 0), available, line_width, font_size, false, point.x)
+				}
+				y += line_h
+				y = page_snap(y, line_h, page_h, period)
+				line_start = i
+				line_width = 0
+				first_line = false
+				continue
+			}
+			line_width += w
+			i += 1
+		}
+		// Last visual line of the paragraph, including the gap below it.
+		if py < y + line_h * 1.25 {
+			available := content_w - (indent if first_line else 0)
+			return index_in_visual_line(app, paragraph, line_start, end, left + (indent if first_line else 0), available, line_width, font_size, true, point.x)
+		}
+		y += line_h * 1.25
+		start = end + 1
+		if p == len(app.paragraphs) - 1 {
+			break
+		}
+	}
+	return len(app.text)
+}
+
+// Walks the glyph advances of one visual line (same alignment and justify math as
+// draw_visual_line) and returns the index nearest to the given x.
+index_in_visual_line :: proc(app: ^App, paragraph: Paragraph, start, end: int, left, available, line_width, font_size: f32, last_line: bool, px: f32) -> int {
+	x := left
+	switch paragraph.align {
+	case .Center:
+		x += max((available - line_width) * 0.5, 0)
+	case .Right:
+		x += max(available - line_width, 0)
+	case .Left, .Justify:
+	case:
+	}
+	space_count := 0
+	if paragraph.align == .Justify && !last_line {
+		for i in start..<end {
+			if app.text[i] == ' ' {
+				space_count += 1
+			}
+		}
+	}
+	extra_space := max(available - line_width, 0) / f32(space_count) if space_count > 0 else 0
+	for i in start..<end {
+		adv := char_width(app, app.text[i], app.styles[i], font_size) + 2
+		if app.text[i] == ' ' {
+			adv += extra_space
+		}
+		if px < x + adv * 0.5 {
+			return i
+		}
+		x += adv
+	}
+	return end
+}
+
+ensure_cursor_visible :: proc(app: ^App, width, base_size, viewport_h: f32) {
+	cursor_y := cursor_document_y(app, width, base_size)
+	if app.keep_cursor_centered {
+		app.scroll_target = max(cursor_y - viewport_h * 0.5, 0)
+	} else {
+		if cursor_y - app.scroll_target > viewport_h {
+			app.scroll_target = cursor_y - viewport_h
+		}
+		if cursor_y - app.scroll_target < 0 {
+			app.scroll_target = cursor_y
+		}
+		app.scroll_target = max(app.scroll_target, 0)
+	}
+	// Ease the view toward the target: exponential smoothing, frame-rate
+	// independent, snapped once the gap falls under half a pixel.
+	app.scroll_y += (app.scroll_target - app.scroll_y) * (1 - math.exp(-12 * rl.GetFrameTime()))
+	if abs(app.scroll_target - app.scroll_y) < 0.5 {
+		app.scroll_y = app.scroll_target
+	}
+}
+
+// Page view metrics in document space: a page holds PAGE_LINES regular lines,
+// and period is the page height plus the gap to the next one. Zero when off.
+page_metrics :: proc(app: ^App, base_size: f32) -> (page_h, period: f32) {
+	if !app.show_pages {
+		return 0, 0
+	}
+	page_h = base_size * 1.42 * PAGE_LINES
+	period = page_h + base_size * 4
+	return
+}
+
+// Pushes a line down to the next page start when it would cross a page boundary.
+page_snap :: proc(y, line_h, page_h, period: f32) -> f32 {
+	if period <= 0 {
+		return y
+	}
+	k := math.floor(y / period)
+	if y + line_h > k * period + page_h {
+		return (k + 1) * period
+	}
+	return y
+}
+
+cursor_document_y :: proc(app: ^App, width, base_size: f32) -> f32 {
+	page_h, period := page_metrics(app, base_size)
+	y: f32
+	start := 0
+	for paragraph, p in app.paragraphs {
+		end := paragraph_end(app, start)
+		font_size := header_size(paragraph.header, base_size)
+		line_h := font_size * 1.42
+		indent := font_size * 2.25 if paragraph.first_indent else 0
+		y = page_snap(y, line_h, page_h, period)
 		line_width: f32
 		first_line := true
 		i := start
@@ -1573,6 +1953,7 @@ cursor_document_y :: proc(app: ^App, width, base_size: f32) -> f32 {
 			w := char_width(app, app.text[i], app.styles[i], font_size) + 2
 			if line_width + w > available && line_width > 0 {
 				y += line_h
+				y = page_snap(y, line_h, page_h, period)
 				line_width = 0
 				first_line = false
 			}
@@ -1591,18 +1972,54 @@ cursor_document_y :: proc(app: ^App, width, base_size: f32) -> f32 {
 	return y
 }
 
-draw_paragraph :: proc(app: ^App, theme: Theme, paragraph: Paragraph, start, end: int, left, y, width, base_size: f32) -> f32 {
-	yy := y
+// Document-space y just below the last visual line; used to count page rectangles.
+document_bottom :: proc(app: ^App, width, base_size: f32) -> f32 {
+	page_h, period := page_metrics(app, base_size)
+	y: f32
+	start := 0
+	last_line_h := base_size * 1.42
+	for paragraph, p in app.paragraphs {
+		end := paragraph_end(app, start)
+		font_size := header_size(paragraph.header, base_size)
+		line_h := font_size * 1.42
+		indent := font_size * 2.25 if paragraph.first_indent else 0
+		y = page_snap(y, line_h, page_h, period)
+		line_width: f32
+		first_line := true
+		for i in start..<end {
+			available := width - (indent if first_line else 0)
+			w := char_width(app, app.text[i], app.styles[i], font_size) + 2
+			if line_width + w > available && line_width > 0 {
+				y += line_h
+				y = page_snap(y, line_h, page_h, period)
+				line_width = 0
+				first_line = false
+			}
+			line_width += w
+		}
+		last_line_h = line_h
+		if p == len(app.paragraphs) - 1 {
+			break
+		}
+		y += line_h * 1.25
+		start = end + 1
+	}
+	return y + last_line_h
+}
+
+// y is in document space; origin converts to screen coordinates at draw time.
+draw_paragraph :: proc(app: ^App, theme: Theme, paragraph: Paragraph, start, end: int, left, origin, y, width, base_size, page_h, period: f32) -> f32 {
 	font_size := header_size(paragraph.header, base_size)
 	line_h := font_size * 1.42
 	indent := font_size * 2.25 if paragraph.first_indent else 0
+	yy := page_snap(y, line_h, page_h, period)
 	line_start := start
 	line_width: f32
 	first_line := true
 	i := start
 
 	if start == end {
-		draw_visual_line(app, theme, paragraph, start, end, left + indent, yy, width - indent, 0, font_size, line_h, true)
+		draw_visual_line(app, theme, paragraph, start, end, left + indent, origin + yy, width - indent, 0, font_size, line_h, true)
 		return yy + line_h * 1.25
 	}
 
@@ -1610,8 +2027,9 @@ draw_paragraph :: proc(app: ^App, theme: Theme, paragraph: Paragraph, start, end
 		available := width - (indent if first_line else 0)
 		w := char_width(app, app.text[i], app.styles[i], font_size) + 2
 		if line_width + w > available && line_start < i {
-			draw_visual_line(app, theme, paragraph, line_start, i, left + (indent if first_line else 0), yy, available, line_width, font_size, line_h, false)
+			draw_visual_line(app, theme, paragraph, line_start, i, left + (indent if first_line else 0), origin + yy, available, line_width, font_size, line_h, false)
 			yy += line_h
+			yy = page_snap(yy, line_h, page_h, period)
 			line_start = i
 			line_width = 0
 			first_line = false
@@ -1620,7 +2038,7 @@ draw_paragraph :: proc(app: ^App, theme: Theme, paragraph: Paragraph, start, end
 		line_width += w
 		i += 1
 	}
-	draw_visual_line(app, theme, paragraph, line_start, end, left + (indent if first_line else 0), yy, width - (indent if first_line else 0), line_width, font_size, line_h, true)
+	draw_visual_line(app, theme, paragraph, line_start, end, left + (indent if first_line else 0), origin + yy, width - (indent if first_line else 0), line_width, font_size, line_h, true)
 	return yy + line_h * 1.25
 }
 
@@ -1645,6 +2063,20 @@ draw_visual_line :: proc(app: ^App, theme: Theme, paragraph: Paragraph, start, e
 	}
 	extra_space := max(available - line_width, 0) / f32(space_count) if space_count > 0 else 0
 	lo, hi := selection_range(app)
+
+	// Marker highlight goes under the glyphs and the selection tint. The +1 on the
+	// width hides truncation gaps between adjacent rectangles.
+	hx := x
+	for i in start..<end {
+		adv := char_width(app, app.text[i], app.styles[i], font_size) + 2
+		if app.text[i] == ' ' {
+			adv += extra_space
+		}
+		if app.styles[i].highlight {
+			rl.DrawRectangle(c.int(hx), c.int(y - 2), c.int(adv + 1), c.int(line_h), theme.highlight)
+		}
+		hx += adv
+	}
 
 	// One rectangle over the whole selected span on this line (no per-glyph boxes).
 	if has_selection(app) {
@@ -1802,13 +2234,27 @@ draw_palette :: proc(app: ^App, theme: Theme) {
 		if i == sel {
 			rl.DrawRectangle(c.int(panel_x + 12), c.int(ry - 6), c.int(panel_w - 24), c.int(row_h - 4), rl.ColorAlpha(theme.accent, 0.18))
 		}
-		rl.DrawTextEx(app.fonts.ui, COMMANDS[entries[i]].label, rl.Vector2{f32(panel_x + 28), f32(ry)}, 22, 1, text_color)
+		rl.DrawTextEx(app.fonts.ui, palette_label(app, COMMANDS[entries[i]]), rl.Vector2{f32(panel_x + 28), f32(ry)}, 22, 1, text_color)
 	}
 	// Divider between the recents group and the rest.
 	if recent_count > 0 && recent_count < len(entries) && recent_count >= first && recent_count < first + visible {
 		dy := f32(list_y + (recent_count - first) * row_h - 8)
 		rl.DrawLineEx(rl.Vector2{f32(panel_x + 16), dy}, rl.Vector2{f32(panel_x + panel_w - 16), dy}, 1, theme.border)
 	}
+}
+
+// Toggle commands show their current state in the palette.
+palette_label :: proc(app: ^App, cmd: Command) -> cstring {
+	on: bool
+	#partial switch cmd.kind {
+	case .Keep_Cursor_Centered:
+		on = app.keep_cursor_centered
+	case .Page_View:
+		on = app.show_pages
+	case:
+		return cmd.label
+	}
+	return fmt.ctprintf("%s  [%s]", cmd.label, "on" if on else "off")
 }
 
 draw_path_prompt :: proc(app: ^App, theme: Theme) {
@@ -1824,6 +2270,8 @@ draw_path_prompt :: proc(app: ^App, theme: Theme) {
 		title = "Save As..."
 	} else if app.path_action == .Open {
 		title = "Open..."
+	} else if app.path_action == .Find {
+		title = "Find (Enter jumps to the next match)"
 	}
 
 	sb := strings.builder_make()
