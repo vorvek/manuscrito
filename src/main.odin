@@ -1337,8 +1337,8 @@ visual_x_of_index :: proc(app: ^App, paragraph: Paragraph, start, end: int, left
 
 // Up/Down move the caret one visual line, holding the horizontal position, across
 // wrapped lines and paragraph boundaries.
-// ponytail: the goal x is taken from the caret each press, so it drifts toward short
-// lines' ends over several moves; add a sticky goal column if that becomes annoying.
+// The goal x is read from the caret on each press, so over several moves it can drift
+// toward the ends of short lines. A sticky goal column would fix that if it ever matters.
 move_visual_line :: proc(app: ^App, dir: int, selecting: bool) {
 	screen_w := f32(rl.GetScreenWidth())
 	base_size := f32(30) * app.zoom
@@ -2574,8 +2574,8 @@ min_raggedness_breaks :: proc(word_start_prefix, word_end_prefix: []f32, full_av
 
 // Char indices where each visual line of the paragraph begins (first element is
 // always `start`), laid out with min_raggedness_breaks. Recomputed per call.
-// ponytail: O(words) per call, re-run every frame for every paragraph; cache per
-// paragraph keyed on text+width if large documents ever lag.
+// This is O(words) per call and runs every frame for every paragraph. If large
+// documents ever lag, cache the result per paragraph keyed on text and width.
 paragraph_line_starts :: proc(app: ^App, start, end: int, width, indent, font_size: f32) -> []int {
 	result := make([dynamic]int, context.temp_allocator)
 	append(&result, start)
