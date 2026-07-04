@@ -13,7 +13,7 @@ import "core:strings"
 import "core:unicode"
 import "core:unicode/utf8"
 
-VERSION :: "1.0.2"
+VERSION :: "1.0.3"
 MAGIC :: "MANUSCRITO\t1"
 // Text lines per page in page view. With the 60-char column this lands near
 // 250 words, the usual novel manuscript page.
@@ -1914,7 +1914,7 @@ draw_document :: proc(app: ^App, theme: Theme) {
 	start := 0
 
 	if len(app.text) == 0 {
-		rl.DrawTextEx(app.fonts.regular, "Start writing.", rl.Vector2{f32(margin_x), f32(top)}, base_size, 2, theme.muted)
+		rl.DrawTextEx(app.fonts.regular, "Start writing. Press F1 for help.", rl.Vector2{f32(margin_x), f32(top)}, base_size, 2, theme.muted)
 	}
 
 	for paragraph, p in app.paragraphs {
