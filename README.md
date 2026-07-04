@@ -1,6 +1,6 @@
 # Manuscrito
 
-Distraction-free writing app for Windows, Linux, and macOS, built with Odin and Raylib.
+Distraction-free full screen writing app for Windows, Linux, and macOS, built with Odin and Raylib.
 
 ![GitHub License](https://img.shields.io/github/license/vorvek/manuscrito) 
 
