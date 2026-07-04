@@ -31,8 +31,9 @@ Windows users can run `.\build.ps1`; Linux/macOS users can run `./build.sh`.
 - `Ctrl++`, `Ctrl+-`, `Ctrl+0` zoom in, out, and reset.
 - `Tab` toggles first-line indentation for the current paragraph.
 - `Ctrl+P` or `Esc` opens the palette; type in it to filter commands.
+- `Ctrl+Q` quits; press it again to confirm.
 
-Quit, Open, and New warn about unsaved changes; run the command a second time to discard them.
+Quit always asks for a second press. Open and New warn about unsaved changes; run the command a second time to discard them.
 
 All commands are also available from the palette, including headers, alignment, and themes. Toggles such as Page View and Keep Cursor Centered show their state in the palette. Page View splits the writing area into novel-sized pages of about 250 words.
 

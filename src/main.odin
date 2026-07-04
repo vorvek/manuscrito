@@ -12,7 +12,7 @@ import "core:strings"
 import "core:unicode"
 import "core:unicode/utf8"
 
-VERSION :: "1.0.0"
+VERSION :: "1.0.1"
 MAGIC :: "MANUSCRITO\t1"
 // Text lines per page in page view. With the 60-char column this lands near
 // 250 words, the usual novel manuscript page.
@@ -501,6 +501,10 @@ handle_shortcuts :: proc(app: ^App) -> bool {
 		execute_command(app, .Highlight)
 		return true
 	}
+	if rl.IsKeyPressed(.Q) {
+		execute_command(app, .Quit)
+		return true
+	}
 	if rl.IsKeyPressed(.EQUAL) || rl.IsKeyPressed(.KP_ADD) {
 		execute_command(app, .Zoom_In)
 		return true
@@ -732,13 +736,14 @@ update_path_prompt :: proc(app: ^App) {
 }
 
 execute_command :: proc(app: ^App, kind: Command_Kind) {
-	// Destructive commands need a second run to discard unsaved changes.
-	if app.dirty && (kind == .Quit || kind == .Open || kind == .New) &&
+	// Quit always needs a second run so a stray Ctrl+Q doesn't close the app;
+	// Open/New only need it when there are unsaved changes to discard.
+	if (kind == .Quit || (app.dirty && (kind == .Open || kind == .New))) &&
 	   (!app.confirm_pending || app.confirm_kind != kind) {
 		app.confirm_pending = true
 		app.confirm_kind = kind
 		app.palette_open = false
-		app.status = "Unsaved changes. Repeat the command to discard."
+		app.status = "Unsaved changes. Repeat the command to discard." if app.dirty else "Press Ctrl+Q again to quit."
 		return
 	}
 	app.confirm_pending = false
