@@ -2,12 +2,6 @@
 
 Distraction-free writing app for Windows, Linux, and macOS, built with Odin and Raylib.
 
-## Run
-
-```sh
-odin run src
-```
-
 ## Build
 
 ```sh
