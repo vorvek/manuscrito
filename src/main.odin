@@ -184,6 +184,7 @@ App :: struct {
 	confirm_pending:  bool,
 	confirm_kind:     Command_Kind,
 	status:           cstring,
+	status_time:      f64,
 	fonts:            Fonts,
 	help_open:        bool,
 }
@@ -831,7 +832,7 @@ execute_command :: proc(app: ^App, kind: Command_Kind) {
 			delete(app.file_path)
 			app.file_path = ""
 		}
-		app.status = "New document"
+		set_status(app, "New document")
 		app.palette_open = false
 	case .Find:
 		begin_path_prompt(app, .Find)
@@ -919,7 +920,7 @@ execute_command :: proc(app: ^App, kind: Command_Kind) {
 		app.palette_open = false
 	case .Theme_Cycle:
 		app.theme_index = (app.theme_index + 1) % len(THEMES)
-		app.status = THEMES[app.theme_index].name
+		set_status(app, THEMES[app.theme_index].name)
 		save_settings(app)
 		// palette stays open so repeated Enter browses every theme
 	case .Quit:
@@ -1081,6 +1082,35 @@ count_words :: proc(app: ^App) -> int {
 		in_word = !space
 	}
 	return n
+}
+
+// Set a transient status message and stamp it, so the status bar can fade it.
+set_status :: proc(app: ^App, msg: cstring) {
+	app.status = msg
+	app.status_time = rl.GetTime()
+}
+
+// The page the cursor sits on (1-based). In page view this is the layout page;
+// otherwise it is a word-based estimate matching the page count.
+current_page :: proc(app: ^App) -> int {
+	screen_w := f32(rl.GetScreenWidth())
+	base_size := f32(30) * app.zoom
+	content_w := min(max(screen_w - 112, 240), char_width(app, 'n', Char_Style{}, base_size) * 60)
+	_, period := page_metrics(app, base_size)
+	if period > 0 {
+		return int(math.floor(cursor_document_y(app, content_w, base_size) / period)) + 1
+	}
+	n := 0
+	in_word := false
+	for i in 0 ..< app.cursor {
+		ch := app.text[i]
+		space := ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r'
+		if !space && !in_word {
+			n += 1
+		}
+		in_word = !space
+	}
+	return n / 250 + 1
 }
 
 settings_file :: proc() -> string {
@@ -1510,7 +1540,7 @@ copy_selection :: proc(app: ^App) {
 	clip, err := strings.to_cstring(&sb)
 	if err == nil {
 		rl.SetClipboardText(clip)
-		app.status = "Copied"
+		set_status(app, "Copied")
 	}
 }
 
@@ -1531,7 +1561,7 @@ paste_clipboard :: proc(app: ^App) {
 	}
 	app.anchor = app.cursor
 	app.dirty = true
-	app.status = "Pasted"
+	set_status(app, "Pasted")
 }
 
 clear_document :: proc(app: ^App) {
@@ -1549,7 +1579,7 @@ clear_document :: proc(app: ^App) {
 find_next :: proc(app: ^App, query: string) {
 	q := utf8.string_to_runes(query, context.temp_allocator)
 	if len(q) == 0 || len(q) > len(app.text) {
-		app.status = "Not found"
+		set_status(app, "Not found")
 		return
 	}
 	for i in 0..<len(q) {
@@ -1571,11 +1601,11 @@ find_next :: proc(app: ^App, query: string) {
 			app.cursor = pos + len(q)
 			sync_active_style(app)
 			app.last_edit = .Other
-			app.status = "Found"
+			set_status(app, "Found")
 			return
 		}
 	}
-	app.status = "Not found"
+	set_status(app, "Not found")
 }
 
 set_file_path :: proc(app: ^App, path: string) {
@@ -1589,7 +1619,7 @@ set_file_path :: proc(app: ^App, path: string) {
 open_document :: proc(app: ^App, path: string) {
 	data, err := os.read_entire_file(path, context.allocator)
 	if err != nil {
-		app.status = "Open failed"
+		set_status(app, "Open failed")
 		return
 	}
 	defer delete(data)
@@ -1611,7 +1641,7 @@ open_document :: proc(app: ^App, path: string) {
 	app.anchor = app.cursor
 	sync_active_style(app)
 	app.dirty = false
-	app.status = "Opened"
+	set_status(app, "Opened")
 }
 
 load_plain_text :: proc(app: ^App, content: string) {
@@ -1670,9 +1700,9 @@ save_document :: proc(app: ^App, path: string) {
 	if os.write_entire_file(path, strings.to_string(sb)) == nil {
 		set_file_path(app, path)
 		app.dirty = false
-		app.status = "Saved"
+		set_status(app, "Saved")
 	} else {
-		app.status = "Save failed"
+		set_status(app, "Save failed")
 	}
 }
 
