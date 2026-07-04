@@ -104,3 +104,12 @@ test_first_line_indent :: proc(t: ^testing.T) {
 	testing.expect(t, len(got) >= 2 && got[1] <= 2, "first line overflowed its indent")
 	testing.expect(t, got[0] == 0, "first line must start at word 0")
 }
+
+@(test)
+test_style_code_roundtrip :: proc(t: ^testing.T) {
+	s := Char_Style{bold = true, italic = false, underline = true, highlight = false, strike = true}
+	code := style_code(s)
+	back := style_from_code(code)
+	testing.expect(t, same_style(s, back), "strike bit must round-trip through style_code")
+	testing.expect(t, code & 16 != 0, "strike must occupy bit 16")
+}

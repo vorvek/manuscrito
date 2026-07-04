@@ -99,6 +99,7 @@ Style_Field :: enum int {
 	Italic,
 	Underline,
 	Highlight,
+	Strike,
 }
 
 Char_Style :: struct {
@@ -106,6 +107,7 @@ Char_Style :: struct {
 	italic:    bool,
 	underline: bool,
 	highlight: bool,
+	strike:    bool,
 }
 
 Paragraph :: struct {
@@ -1433,6 +1435,8 @@ get_style_field :: proc(style: Char_Style, field: Style_Field) -> bool {
 		return style.underline
 	case .Highlight:
 		return style.highlight
+	case .Strike:
+		return style.strike
 	}
 	return false
 }
@@ -1447,6 +1451,8 @@ set_style_field :: proc(style: ^Char_Style, field: Style_Field, value: bool) {
 		style.underline = value
 	case .Highlight:
 		style.highlight = value
+	case .Strike:
+		style.strike = value
 	}
 }
 
@@ -1765,7 +1771,7 @@ parse_align_or :: proc(text: string, fallback: Align) -> Align {
 }
 
 same_style :: proc(a, b: Char_Style) -> bool {
-	return a.bold == b.bold && a.italic == b.italic && a.underline == b.underline && a.highlight == b.highlight
+	return a.bold == b.bold && a.italic == b.italic && a.underline == b.underline && a.highlight == b.highlight && a.strike == b.strike
 }
 
 style_code :: proc(style: Char_Style) -> int {
@@ -1774,6 +1780,7 @@ style_code :: proc(style: Char_Style) -> int {
 	if style.italic { code |= 2 }
 	if style.underline { code |= 4 }
 	if style.highlight { code |= 8 }
+	if style.strike { code |= 16 }
 	return code
 }
 
@@ -1783,6 +1790,7 @@ style_from_code :: proc(code: int) -> Char_Style {
 		italic    = (code & 2) != 0,
 		underline = (code & 4) != 0,
 		highlight = (code & 8) != 0,
+		strike    = (code & 16) != 0,
 	}
 }
 
