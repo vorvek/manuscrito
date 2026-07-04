@@ -59,6 +59,7 @@ Command_Kind :: enum int {
 	Italic,
 	Underline,
 	Highlight,
+	Strike,
 	Header_1,
 	Header_2,
 	Header_3,
@@ -203,6 +204,7 @@ HELP_ENTRIES := [?]Help_Entry {
 	{"Ctrl+C / X / V",        "Copy / Cut / Paste"},
 	{"Ctrl+B / I / U",        "Bold / Italic / Underline"},
 	{"Ctrl+H",                "Highlight"},
+	{"Ctrl+J",                "Strikethrough"},
 	{"Ctrl++ / - / 0",        "Zoom in / out / reset"},
 	{"Up / Down",             "Move by line"},
 	{"Ctrl+Left/Right",       "Move by word"},
@@ -246,6 +248,7 @@ COMMANDS := [?]Command {
 	{"Italics", .Italic},
 	{"Underline", .Underline},
 	{"Highlight", .Highlight},
+	{"Strikethrough", .Strike},
 	{"Size: Heading 1", .Header_1},
 	{"Size: Heading 2", .Header_2},
 	{"Size: Heading 3", .Header_3},
@@ -542,6 +545,10 @@ handle_shortcuts :: proc(app: ^App) -> bool {
 		execute_command(app, .Highlight)
 		return true
 	}
+	if rl.IsKeyPressed(.J) {
+		execute_command(app, .Strike)
+		return true
+	}
 	if rl.IsKeyPressed(.Q) {
 		execute_command(app, .Quit)
 		return true
@@ -800,7 +807,7 @@ execute_command :: proc(app: ^App, kind: Command_Kind) {
 		record_recent(app, kind)
 	}
 	#partial switch kind {
-	case .Cut, .Paste, .Bold, .Italic, .Underline, .Highlight, .Header_1 ..= .Size_Paragraph, .Align_Left ..= .Align_Justify, .First_Line_Indent:
+	case .Cut, .Paste, .Bold, .Italic, .Underline, .Highlight, .Strike, .Header_1 ..= .Size_Paragraph, .Align_Left ..= .Align_Justify, .First_Line_Indent:
 		begin_edit(app, .Other)
 	}
 	switch kind {
@@ -861,6 +868,9 @@ execute_command :: proc(app: ^App, kind: Command_Kind) {
 		app.palette_open = false
 	case .Highlight:
 		toggle_style(app, .Highlight)
+		app.palette_open = false
+	case .Strike:
+		toggle_style(app, .Strike)
 		app.palette_open = false
 	case .Header_1:
 		apply_header(app, 1)
@@ -2349,6 +2359,8 @@ draw_visual_line :: proc(app: ^App, theme: Theme, paragraph: Paragraph, start, e
 
 	// Draw glyphs; underline as continuous runs so there are no gaps between letters.
 	ul_x0: f32 = -1
+	st_x0: f32 = -1
+	strike_y := y + font_size * 0.5
 	for i in start..<end {
 		style := app.styles[i]
 		ch := app.text[i]
@@ -2362,6 +2374,14 @@ draw_visual_line :: proc(app: ^App, theme: Theme, paragraph: Paragraph, start, e
 			rl.DrawLineEx(rl.Vector2{ul_x0, y + font_size + 4}, rl.Vector2{x, y + font_size + 4}, 1.5, theme.foreground)
 			ul_x0 = -1
 		}
+		if style.strike {
+			if st_x0 < 0 {
+				st_x0 = x
+			}
+		} else if st_x0 >= 0 {
+			rl.DrawLineEx(rl.Vector2{st_x0, strike_y}, rl.Vector2{x, strike_y}, 1.5, theme.foreground)
+			st_x0 = -1
+		}
 		x += w + 2
 		if ch == ' ' && i < content_end {
 			x += extra_space
@@ -2372,6 +2392,9 @@ draw_visual_line :: proc(app: ^App, theme: Theme, paragraph: Paragraph, start, e
 	}
 	if ul_x0 >= 0 {
 		rl.DrawLineEx(rl.Vector2{ul_x0, y + font_size + 4}, rl.Vector2{x, y + font_size + 4}, 1.5, theme.foreground)
+	}
+	if st_x0 >= 0 {
+		rl.DrawLineEx(rl.Vector2{st_x0, strike_y}, rl.Vector2{x, strike_y}, 1.5, theme.foreground)
 	}
 }
 
