@@ -13,7 +13,7 @@ import "core:strings"
 import "core:unicode"
 import "core:unicode/utf8"
 
-VERSION :: "1.0.3"
+VERSION :: "1.0.2"
 MAGIC :: "MANUSCRITO\t1"
 // Text lines per page in page view. With the 60-char column this lands near
 // 250 words, the usual novel manuscript page.
