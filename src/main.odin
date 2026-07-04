@@ -181,6 +181,31 @@ App :: struct {
 	confirm_kind:     Command_Kind,
 	status:           cstring,
 	fonts:            Fonts,
+	help_open:        bool,
+}
+
+Help_Entry :: struct {
+	keys: cstring,
+	desc: cstring,
+}
+
+HELP_ENTRIES := [?]Help_Entry {
+	{"F1",                    "Toggle this help"},
+	{"Ctrl+P / Esc",          "Open the command palette"},
+	{"Ctrl+S / Ctrl+Shift+S", "Save / Save As"},
+	{"Ctrl+O / Ctrl+N",       "Open / New document"},
+	{"Ctrl+F",                "Find; Enter jumps to the next match"},
+	{"Ctrl+Z / Ctrl+Shift+Z", "Undo / Redo"},
+	{"Ctrl+A",                "Select all"},
+	{"Ctrl+C / X / V",        "Copy / Cut / Paste"},
+	{"Ctrl+B / I / U",        "Bold / Italic / Underline"},
+	{"Ctrl+H",                "Highlight"},
+	{"Ctrl++ / - / 0",        "Zoom in / out / reset"},
+	{"Ctrl+Left/Right",       "Move by word"},
+	{"Ctrl+Home/End",         "Jump to start/end of document"},
+	{"Ctrl+Wheel",            "Zoom"},
+	{"Tab",                   "Toggle first-line indent"},
+	{"Ctrl+Q",                "Quit (press again to confirm)"},
 }
 
 // Fields: name, background, foreground, muted, panel, border, accent, selection, page, highlight.
@@ -374,6 +399,17 @@ update :: proc(app: ^App) {
 	if app.show_splash {
 		if splash_dismissed() {
 			app.show_splash = false
+		}
+		return
+	}
+
+	if rl.IsKeyPressed(.F1) && !app.palette_open {
+		app.help_open = !app.help_open
+		return
+	}
+	if app.help_open {
+		if rl.IsKeyPressed(.ESCAPE) {
+			app.help_open = false
 		}
 		return
 	}
@@ -1657,6 +1693,9 @@ draw :: proc(app: ^App) {
 	if app.palette_open {
 		draw_palette(app, theme)
 	}
+	if app.help_open {
+		draw_help(app, theme)
+	}
 }
 
 draw_splash :: proc(app: ^App, theme: Theme) {
@@ -2241,6 +2280,34 @@ draw_palette :: proc(app: ^App, theme: Theme) {
 	if recent_count > 0 && recent_count < len(entries) && recent_count >= first && recent_count < first + visible {
 		dy := f32(list_y + (recent_count - first) * row_h - 8)
 		rl.DrawLineEx(rl.Vector2{f32(panel_x + 16), dy}, rl.Vector2{f32(panel_x + panel_w - 16), dy}, 1, theme.border)
+	}
+}
+
+draw_help :: proc(app: ^App, theme: Theme) {
+	screen_w := int(rl.GetScreenWidth())
+	screen_h := int(rl.GetScreenHeight())
+	row_h := 28
+	panel_w := min(640, screen_w - 80)
+	panel_h := min(80 + len(HELP_ENTRIES) * row_h, screen_h - 80)
+	panel_x := (screen_w - panel_w) / 2
+	panel_y := (screen_h - panel_h) / 2
+	text_color := readable_foreground(theme)
+
+	rl.DrawRectangle(0, 0, c.int(screen_w), c.int(screen_h), rl.ColorAlpha(theme.background, 0.72))
+	rl.DrawRectangle(c.int(panel_x), c.int(panel_y), c.int(panel_w), c.int(panel_h), opaque_panel(theme))
+	rl.DrawRectangleLines(c.int(panel_x), c.int(panel_y), c.int(panel_w), c.int(panel_h), theme.border)
+	rl.DrawTextEx(app.fonts.ui, "Keyboard Shortcuts", rl.Vector2{f32(panel_x + 24), f32(panel_y + 18)}, 25, 1, text_color)
+
+	keys_x := panel_x + 28
+	desc_x := panel_x + 220
+	list_y := panel_y + 60
+	for entry, i in HELP_ENTRIES {
+		ry := list_y + i * row_h
+		if ry + row_h > panel_y + panel_h - 10 {
+			break
+		}
+		rl.DrawTextEx(app.fonts.ui, entry.keys, rl.Vector2{f32(keys_x), f32(ry)}, 18, 1, theme.accent)
+		rl.DrawTextEx(app.fonts.ui, entry.desc, rl.Vector2{f32(desc_x), f32(ry)}, 18, 1, text_color)
 	}
 }
 

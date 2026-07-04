@@ -32,6 +32,7 @@ Windows users can run `.\build.ps1`; Linux/macOS users can run `./build.sh`.
 - `Tab` toggles first-line indentation for the current paragraph.
 - `Ctrl+P` or `Esc` opens the palette; type in it to filter commands.
 - `Ctrl+Q` quits; press it again to confirm.
+- `F1` opens a help screen listing every shortcut.
 
 Quit always asks for a second press. Open and New warn about unsaved changes; run the command a second time to discard them.
 
