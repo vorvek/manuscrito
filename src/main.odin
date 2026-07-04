@@ -13,7 +13,7 @@ import "core:strings"
 import "core:unicode"
 import "core:unicode/utf8"
 
-VERSION :: "1.0.2"
+VERSION :: "1.0.3"
 MAGIC :: "MANUSCRITO\t1"
 // Text lines per page in page view. With the 60-char column this lands near
 // 250 words, the usual novel manuscript page.
@@ -36,11 +36,20 @@ Path_Action :: enum int {
 	Save_As,
 	Open,
 	Find,
+	Export,
 }
 
 Palette_Mode :: enum int {
 	Commands,
 	Path,
+}
+
+Export_Format :: enum int {
+	Txt,
+	Rtf,
+	Doc,
+	Md,
+	Html,
 }
 
 Command_Kind :: enum int {
@@ -59,6 +68,7 @@ Command_Kind :: enum int {
 	Italic,
 	Underline,
 	Highlight,
+	Strike,
 	Header_1,
 	Header_2,
 	Header_3,
@@ -75,6 +85,11 @@ Command_Kind :: enum int {
 	Keep_Cursor_Centered,
 	Page_View,
 	Theme_Cycle,
+	Export_Txt,
+	Export_Rtf,
+	Export_Doc,
+	Export_Md,
+	Export_Html,
 	Quit,
 }
 
@@ -99,6 +114,7 @@ Style_Field :: enum int {
 	Italic,
 	Underline,
 	Highlight,
+	Strike,
 }
 
 Char_Style :: struct {
@@ -106,6 +122,7 @@ Char_Style :: struct {
 	italic:    bool,
 	underline: bool,
 	highlight: bool,
+	strike:    bool,
 }
 
 Paragraph :: struct {
@@ -163,6 +180,7 @@ App :: struct {
 	recent:           [dynamic]Command_Kind,
 	selected_command: int,
 	path_action:      Path_Action,
+	export_format:    Export_Format,
 	path_input:       [dynamic]rune,
 	file_path:        string,
 	theme_index:      int,
@@ -181,6 +199,7 @@ App :: struct {
 	confirm_pending:  bool,
 	confirm_kind:     Command_Kind,
 	status:           cstring,
+	status_time:      f64,
 	fonts:            Fonts,
 	help_open:        bool,
 }
@@ -201,6 +220,7 @@ HELP_ENTRIES := [?]Help_Entry {
 	{"Ctrl+C / X / V",        "Copy / Cut / Paste"},
 	{"Ctrl+B / I / U",        "Bold / Italic / Underline"},
 	{"Ctrl+H",                "Highlight"},
+	{"Ctrl+J",                "Strikethrough"},
 	{"Ctrl++ / - / 0",        "Zoom in / out / reset"},
 	{"Up / Down",             "Move by line"},
 	{"Ctrl+Left/Right",       "Move by word"},
@@ -244,6 +264,7 @@ COMMANDS := [?]Command {
 	{"Italics", .Italic},
 	{"Underline", .Underline},
 	{"Highlight", .Highlight},
+	{"Strikethrough", .Strike},
 	{"Size: Heading 1", .Header_1},
 	{"Size: Heading 2", .Header_2},
 	{"Size: Heading 3", .Header_3},
@@ -260,6 +281,11 @@ COMMANDS := [?]Command {
 	{"Keep Cursor Centered Vertically", .Keep_Cursor_Centered},
 	{"Page View", .Page_View},
 	{"Theme: Next", .Theme_Cycle},
+	{"Export as TXT", .Export_Txt},
+	{"Export as RTF", .Export_Rtf},
+	{"Export as DOC", .Export_Doc},
+	{"Export as Markdown", .Export_Md},
+	{"Export as HTML", .Export_Html},
 	{"Quit", .Quit},
 }
 
@@ -540,6 +566,10 @@ handle_shortcuts :: proc(app: ^App) -> bool {
 		execute_command(app, .Highlight)
 		return true
 	}
+	if rl.IsKeyPressed(.J) {
+		execute_command(app, .Strike)
+		return true
+	}
 	if rl.IsKeyPressed(.Q) {
 		execute_command(app, .Quit)
 		return true
@@ -763,6 +793,8 @@ update_path_prompt :: proc(app: ^App) {
 				// The prompt stays open so Enter jumps to the next match.
 				find_next(app, path)
 				return
+			case .Export:
+				export_document(app, path)
 			case .None:
 			case:
 			}
@@ -791,6 +823,9 @@ execute_command :: proc(app: ^App, kind: Command_Kind) {
 		app.confirm_kind = kind
 		app.palette_open = false
 		app.status = "Unsaved changes. Repeat the command to discard." if app.dirty else "Press Ctrl+Q again to quit."
+		// Not a timed message: it shows only while confirm_pending, and the old
+		// stamp keeps it from reappearing in the timed slot once the confirm clears.
+		app.status_time = 0
 		return
 	}
 	app.confirm_pending = false
@@ -798,7 +833,7 @@ execute_command :: proc(app: ^App, kind: Command_Kind) {
 		record_recent(app, kind)
 	}
 	#partial switch kind {
-	case .Cut, .Paste, .Bold, .Italic, .Underline, .Highlight, .Header_1 ..= .Size_Paragraph, .Align_Left ..= .Align_Justify, .First_Line_Indent:
+	case .Cut, .Paste, .Bold, .Italic, .Underline, .Highlight, .Strike, .Header_1 ..= .Size_Paragraph, .Align_Left ..= .Align_Justify, .First_Line_Indent:
 		begin_edit(app, .Other)
 	}
 	switch kind {
@@ -822,7 +857,7 @@ execute_command :: proc(app: ^App, kind: Command_Kind) {
 			delete(app.file_path)
 			app.file_path = ""
 		}
-		app.status = "New document"
+		set_status(app, "New document")
 		app.palette_open = false
 	case .Find:
 		begin_path_prompt(app, .Find)
@@ -859,6 +894,9 @@ execute_command :: proc(app: ^App, kind: Command_Kind) {
 		app.palette_open = false
 	case .Highlight:
 		toggle_style(app, .Highlight)
+		app.palette_open = false
+	case .Strike:
+		toggle_style(app, .Strike)
 		app.palette_open = false
 	case .Header_1:
 		apply_header(app, 1)
@@ -907,11 +945,64 @@ execute_command :: proc(app: ^App, kind: Command_Kind) {
 		app.palette_open = false
 	case .Theme_Cycle:
 		app.theme_index = (app.theme_index + 1) % len(THEMES)
-		app.status = THEMES[app.theme_index].name
+		set_status(app, THEMES[app.theme_index].name)
 		save_settings(app)
 		// palette stays open so repeated Enter browses every theme
+	case .Export_Txt:
+		begin_export(app, .Txt)
+	case .Export_Rtf:
+		begin_export(app, .Rtf)
+	case .Export_Doc:
+		begin_export(app, .Doc)
+	case .Export_Md:
+		begin_export(app, .Md)
+	case .Export_Html:
+		begin_export(app, .Html)
 	case .Quit:
 		app.quit = true
+	}
+}
+
+begin_export :: proc(app: ^App, format: Export_Format) {
+	app.export_format = format
+	begin_path_prompt(app, .Export)
+}
+
+export_extension :: proc(format: Export_Format) -> string {
+	switch format {
+	case .Txt:  return ".txt"
+	case .Rtf:  return ".rtf"
+	case .Doc:  return ".doc"
+	case .Md:   return ".md"
+	case .Html: return ".html"
+	}
+	return ".txt"
+}
+
+export_title :: proc(format: Export_Format) -> cstring {
+	switch format {
+	case .Txt:  return "Export as TXT"
+	case .Rtf:  return "Export as RTF"
+	case .Doc:  return "Export as DOC"
+	case .Md:   return "Export as Markdown"
+	case .Html: return "Export as HTML"
+	}
+	return "Export"
+}
+
+prefill_export_path :: proc(app: ^App) {
+	base := "document"
+	if len(app.file_path) > 0 {
+		stem := filepath.stem(app.file_path)
+		if len(stem) > 0 {
+			base = stem
+		}
+	}
+	for ch in base {
+		append(&app.path_input, ch)
+	}
+	for ch in export_extension(app.export_format) {
+		append(&app.path_input, ch)
 	}
 }
 
@@ -921,6 +1012,9 @@ begin_path_prompt :: proc(app: ^App, action: Path_Action) {
 		for ch in app.file_path {
 			append(&app.path_input, ch)
 		}
+	}
+	if action == .Export {
+		prefill_export_path(app)
 	}
 	app.path_action = action
 	app.palette_open = true
@@ -1071,6 +1165,35 @@ count_words :: proc(app: ^App) -> int {
 	return n
 }
 
+// Set a transient status message and stamp it, so the status bar can clear it after a few seconds.
+set_status :: proc(app: ^App, msg: cstring) {
+	app.status = msg
+	app.status_time = rl.GetTime()
+}
+
+// The page the cursor sits on (1-based). In page view this is the layout page;
+// otherwise it is a word-based estimate matching the page count.
+current_page :: proc(app: ^App) -> int {
+	screen_w := f32(rl.GetScreenWidth())
+	base_size := f32(30) * app.zoom
+	content_w := min(max(screen_w - 112, 240), char_width(app, 'n', Char_Style{}, base_size) * 60)
+	_, period := page_metrics(app, base_size)
+	if period > 0 {
+		return int(math.floor(cursor_document_y(app, content_w, base_size) / period)) + 1
+	}
+	n := 0
+	in_word := false
+	for i in 0 ..< app.cursor {
+		ch := app.text[i]
+		space := ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r'
+		if !space && !in_word {
+			n += 1
+		}
+		in_word = !space
+	}
+	return n / 250 + 1
+}
+
 settings_file :: proc() -> string {
 	dir: string
 	when ODIN_OS == .Windows {
@@ -1214,8 +1337,8 @@ visual_x_of_index :: proc(app: ^App, paragraph: Paragraph, start, end: int, left
 
 // Up/Down move the caret one visual line, holding the horizontal position, across
 // wrapped lines and paragraph boundaries.
-// ponytail: the goal x is taken from the caret each press, so it drifts toward short
-// lines' ends over several moves; add a sticky goal column if that becomes annoying.
+// The goal x is read from the caret on each press, so over several moves it can drift
+// toward the ends of short lines. A sticky goal column would fix that if it ever matters.
 move_visual_line :: proc(app: ^App, dir: int, selecting: bool) {
 	screen_w := f32(rl.GetScreenWidth())
 	base_size := f32(30) * app.zoom
@@ -1433,6 +1556,8 @@ get_style_field :: proc(style: Char_Style, field: Style_Field) -> bool {
 		return style.underline
 	case .Highlight:
 		return style.highlight
+	case .Strike:
+		return style.strike
 	}
 	return false
 }
@@ -1447,6 +1572,8 @@ set_style_field :: proc(style: ^Char_Style, field: Style_Field, value: bool) {
 		style.underline = value
 	case .Highlight:
 		style.highlight = value
+	case .Strike:
+		style.strike = value
 	}
 }
 
@@ -1494,7 +1621,7 @@ copy_selection :: proc(app: ^App) {
 	clip, err := strings.to_cstring(&sb)
 	if err == nil {
 		rl.SetClipboardText(clip)
-		app.status = "Copied"
+		set_status(app, "Copied")
 	}
 }
 
@@ -1515,7 +1642,7 @@ paste_clipboard :: proc(app: ^App) {
 	}
 	app.anchor = app.cursor
 	app.dirty = true
-	app.status = "Pasted"
+	set_status(app, "Pasted")
 }
 
 clear_document :: proc(app: ^App) {
@@ -1533,7 +1660,7 @@ clear_document :: proc(app: ^App) {
 find_next :: proc(app: ^App, query: string) {
 	q := utf8.string_to_runes(query, context.temp_allocator)
 	if len(q) == 0 || len(q) > len(app.text) {
-		app.status = "Not found"
+		set_status(app, "Not found")
 		return
 	}
 	for i in 0..<len(q) {
@@ -1555,11 +1682,11 @@ find_next :: proc(app: ^App, query: string) {
 			app.cursor = pos + len(q)
 			sync_active_style(app)
 			app.last_edit = .Other
-			app.status = "Found"
+			set_status(app, "Found")
 			return
 		}
 	}
-	app.status = "Not found"
+	set_status(app, "Not found")
 }
 
 set_file_path :: proc(app: ^App, path: string) {
@@ -1573,7 +1700,7 @@ set_file_path :: proc(app: ^App, path: string) {
 open_document :: proc(app: ^App, path: string) {
 	data, err := os.read_entire_file(path, context.allocator)
 	if err != nil {
-		app.status = "Open failed"
+		set_status(app, "Open failed")
 		return
 	}
 	defer delete(data)
@@ -1595,7 +1722,7 @@ open_document :: proc(app: ^App, path: string) {
 	app.anchor = app.cursor
 	sync_active_style(app)
 	app.dirty = false
-	app.status = "Opened"
+	set_status(app, "Opened")
 }
 
 load_plain_text :: proc(app: ^App, content: string) {
@@ -1654,9 +1781,29 @@ save_document :: proc(app: ^App, path: string) {
 	if os.write_entire_file(path, strings.to_string(sb)) == nil {
 		set_file_path(app, path)
 		app.dirty = false
-		app.status = "Saved"
+		set_status(app, "Saved")
 	} else {
-		app.status = "Save failed"
+		set_status(app, "Save failed")
+	}
+}
+
+export_document :: proc(app: ^App, path: string) {
+	sb := strings.builder_make()
+	defer strings.builder_destroy(&sb)
+	switch app.export_format {
+	case .Txt:
+		export_txt(app, &sb)
+	case .Rtf, .Doc:
+		export_rtf(app, &sb)
+	case .Md:
+		export_md(app, &sb)
+	case .Html:
+		export_html(app, &sb)
+	}
+	if os.write_entire_file(path, strings.to_string(sb)) == nil {
+		set_status(app, "Exported")
+	} else {
+		set_status(app, "Export failed")
 	}
 }
 
@@ -1691,6 +1838,225 @@ write_paragraph :: proc(sb: ^strings.Builder, paragraph: Paragraph) {
 	strings.write_byte(sb, '\t')
 	strings.write_int(sb, 1 if paragraph.first_indent else 0)
 	strings.write_byte(sb, '\n')
+}
+
+export_txt :: proc(app: ^App, sb: ^strings.Builder) {
+	start := 0
+	for _, p in app.paragraphs {
+		end := paragraph_end(app, start)
+		for i in start ..< end {
+			strings.write_rune(sb, app.text[i])
+		}
+		if p != len(app.paragraphs) - 1 {
+			strings.write_string(sb, "\n\n")
+		}
+		start = end + 1
+	}
+	strings.write_byte(sb, '\n')
+}
+
+export_md :: proc(app: ^App, sb: ^strings.Builder) {
+	start := 0
+	for para, p in app.paragraphs {
+		end := paragraph_end(app, start)
+		switch para.header {
+		case 1: strings.write_string(sb, "# ")
+		case 2: strings.write_string(sb, "## ")
+		case 3: strings.write_string(sb, "### ")
+		case 4: strings.write_string(sb, "#### ")
+		}
+		write_md_runs(app, sb, start, end)
+		if p != len(app.paragraphs) - 1 {
+			strings.write_string(sb, "\n\n")
+		}
+		start = end + 1
+	}
+	strings.write_byte(sb, '\n')
+}
+
+write_md_runs :: proc(app: ^App, sb: ^strings.Builder, start, end: int) {
+	i := start
+	for i < end {
+		style := app.styles[i]
+		run_start := i
+		for i < end && same_style(app.styles[i], style) {
+			i += 1
+		}
+		opens := make([dynamic]string, context.temp_allocator)
+		closes := make([dynamic]string, context.temp_allocator)
+		if style.underline { append(&opens, "<u>"); append(&closes, "</u>") }
+		if style.bold      { append(&opens, "**");  append(&closes, "**") }
+		if style.italic    { append(&opens, "*");   append(&closes, "*") }
+		if style.strike    { append(&opens, "~~");  append(&closes, "~~") }
+		for o in opens {
+			strings.write_string(sb, o)
+		}
+		for j in run_start ..< i {
+			strings.write_rune(sb, app.text[j])
+		}
+		#reverse for cl in closes {
+			strings.write_string(sb, cl)
+		}
+	}
+}
+
+export_html :: proc(app: ^App, sb: ^strings.Builder) {
+	strings.write_string(sb, "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n")
+	start := 0
+	for para in app.paragraphs {
+		end := paragraph_end(app, start)
+		tag := "p"
+		switch para.header {
+		case 1: tag = "h1"
+		case 2: tag = "h2"
+		case 3: tag = "h3"
+		case 4: tag = "h4"
+		}
+		strings.write_byte(sb, '<')
+		strings.write_string(sb, tag)
+		style_attr := html_paragraph_style(para)
+		if len(style_attr) > 0 {
+			strings.write_string(sb, " style=\"")
+			strings.write_string(sb, style_attr)
+			strings.write_string(sb, "\"")
+		}
+		strings.write_byte(sb, '>')
+		write_html_runs(app, sb, start, end)
+		strings.write_string(sb, "</")
+		strings.write_string(sb, tag)
+		strings.write_string(sb, ">\n")
+		start = end + 1
+	}
+	strings.write_string(sb, "</body>\n</html>\n")
+}
+
+html_paragraph_style :: proc(para: Paragraph) -> string {
+	sb := strings.builder_make(context.temp_allocator)
+	switch para.align {
+	case .Center:  strings.write_string(&sb, "text-align:center;")
+	case .Right:   strings.write_string(&sb, "text-align:right;")
+	case .Justify: strings.write_string(&sb, "text-align:justify;")
+	case .Left:
+	}
+	if para.first_indent {
+		strings.write_string(&sb, "text-indent:2em;")
+	}
+	return strings.to_string(sb)
+}
+
+write_html_runs :: proc(app: ^App, sb: ^strings.Builder, start, end: int) {
+	i := start
+	for i < end {
+		style := app.styles[i]
+		run_start := i
+		for i < end && same_style(app.styles[i], style) {
+			i += 1
+		}
+		opens := make([dynamic]string, context.temp_allocator)
+		closes := make([dynamic]string, context.temp_allocator)
+		if style.bold      { append(&opens, "<b>"); append(&closes, "</b>") }
+		if style.italic    { append(&opens, "<i>"); append(&closes, "</i>") }
+		if style.underline { append(&opens, "<u>"); append(&closes, "</u>") }
+		if style.strike    { append(&opens, "<s>"); append(&closes, "</s>") }
+		for o in opens {
+			strings.write_string(sb, o)
+		}
+		for j in run_start ..< i {
+			write_html_escaped(sb, app.text[j])
+		}
+		#reverse for cl in closes {
+			strings.write_string(sb, cl)
+		}
+	}
+}
+
+write_html_escaped :: proc(sb: ^strings.Builder, ch: rune) {
+	switch ch {
+	case '&': strings.write_string(sb, "&amp;")
+	case '<': strings.write_string(sb, "&lt;")
+	case '>': strings.write_string(sb, "&gt;")
+	case:     strings.write_rune(sb, ch)
+	}
+}
+
+export_rtf :: proc(app: ^App, sb: ^strings.Builder) {
+	strings.write_string(sb, "{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Times New Roman;}}\n")
+	start := 0
+	for para in app.paragraphs {
+		end := paragraph_end(app, start)
+		strings.write_string(sb, "\\pard")
+		switch para.align {
+		case .Left:    strings.write_string(sb, "\\ql")
+		case .Center:  strings.write_string(sb, "\\qc")
+		case .Right:   strings.write_string(sb, "\\qr")
+		case .Justify: strings.write_string(sb, "\\qj")
+		}
+		if para.first_indent {
+			strings.write_string(sb, "\\fi720")
+		}
+		strings.write_string(sb, fmt.tprintf("\\fs%d", rtf_font_size(para.header)))
+		write_rtf_runs(app, sb, start, end)
+		strings.write_string(sb, "\\par\n")
+		start = end + 1
+	}
+	strings.write_string(sb, "}\n")
+}
+
+rtf_font_size :: proc(header: int) -> int {
+	base := f32(24)
+	switch header {
+	case 1: return int(base * 1.7)
+	case 2: return int(base * 1.45)
+	case 3: return int(base * 1.25)
+	case 4: return int(base * 1.12)
+	}
+	return int(base)
+}
+
+write_rtf_runs :: proc(app: ^App, sb: ^strings.Builder, start, end: int) {
+	i := start
+	for i < end {
+		style := app.styles[i]
+		run_start := i
+		for i < end && same_style(app.styles[i], style) {
+			i += 1
+		}
+		strings.write_byte(sb, '{')
+		wrote_ctrl := false
+		if style.bold      { strings.write_string(sb, "\\b");      wrote_ctrl = true }
+		if style.italic    { strings.write_string(sb, "\\i");      wrote_ctrl = true }
+		if style.underline { strings.write_string(sb, "\\ul");     wrote_ctrl = true }
+		if style.strike    { strings.write_string(sb, "\\strike"); wrote_ctrl = true }
+		if wrote_ctrl {
+			strings.write_byte(sb, ' ')
+		}
+		for j in run_start ..< i {
+			write_rtf_rune(sb, app.text[j])
+		}
+		strings.write_byte(sb, '}')
+	}
+}
+
+write_rtf_rune :: proc(sb: ^strings.Builder, ch: rune) {
+	switch ch {
+	case '\\': strings.write_string(sb, "\\\\")
+	case '{':  strings.write_string(sb, "\\{")
+	case '}':  strings.write_string(sb, "\\}")
+	case:
+		// RTF \uN takes a signed 16-bit integer. BMP code points above 0x7FFF
+		// must wrap negative (the i16 cast does that); code points past the BMP
+		// become a UTF-16 surrogate pair.
+		if ch < 128 {
+			strings.write_rune(sb, ch)
+		} else if ch <= 0xFFFF {
+			strings.write_string(sb, fmt.tprintf("\\u%d?", i16(ch)))
+		} else {
+			c := int(ch) - 0x10000
+			hi := 0xD800 + (c >> 10)
+			lo := 0xDC00 + (c & 0x3FF)
+			strings.write_string(sb, fmt.tprintf("\\u%d?\\u%d?", i16(hi), i16(lo)))
+		}
+	}
 }
 
 write_run :: proc(sb: ^strings.Builder, style: Char_Style, text: []rune) {
@@ -1765,7 +2131,7 @@ parse_align_or :: proc(text: string, fallback: Align) -> Align {
 }
 
 same_style :: proc(a, b: Char_Style) -> bool {
-	return a.bold == b.bold && a.italic == b.italic && a.underline == b.underline && a.highlight == b.highlight
+	return a.bold == b.bold && a.italic == b.italic && a.underline == b.underline && a.highlight == b.highlight && a.strike == b.strike
 }
 
 style_code :: proc(style: Char_Style) -> int {
@@ -1774,6 +2140,7 @@ style_code :: proc(style: Char_Style) -> int {
 	if style.italic { code |= 2 }
 	if style.underline { code |= 4 }
 	if style.highlight { code |= 8 }
+	if style.strike { code |= 16 }
 	return code
 }
 
@@ -1783,6 +2150,7 @@ style_from_code :: proc(code: int) -> Char_Style {
 		italic    = (code & 2) != 0,
 		underline = (code & 4) != 0,
 		highlight = (code & 8) != 0,
+		strike    = (code & 16) != 0,
 	}
 }
 
@@ -1906,6 +2274,9 @@ draw_document :: proc(app: ^App, theme: Theme) {
 				continue
 			}
 			rl.DrawRectangle(c.int(max(page_x, 0)), c.int(ry), c.int(content_w + page_pad * 2), c.int(page_h + pad * 2), theme.page)
+			num := fmt.ctprintf("%d", k + 1)
+			num_w := rl.MeasureTextEx(app.fonts.ui, num, 16, 1)
+			rl.DrawTextEx(app.fonts.ui, num, rl.Vector2{page_x + content_w + page_pad * 2 - num_w.x - 14, ry + page_h + pad * 2 - 30}, 16, 1, theme.muted)
 		}
 	} else {
 		rl.DrawRectangle(c.int(max(page_x, 0)), 0, c.int(content_w + page_pad * 2), c.int(screen_h), theme.page)
@@ -1914,7 +2285,7 @@ draw_document :: proc(app: ^App, theme: Theme) {
 	start := 0
 
 	if len(app.text) == 0 {
-		rl.DrawTextEx(app.fonts.regular, "Start writing.", rl.Vector2{f32(margin_x), f32(top)}, base_size, 2, theme.muted)
+		rl.DrawTextEx(app.fonts.regular, "Start writing. Press F1 for help.", rl.Vector2{f32(margin_x), f32(top)}, base_size, 2, theme.muted)
 	}
 
 	for paragraph, p in app.paragraphs {
@@ -1929,20 +2300,37 @@ draw_document :: proc(app: ^App, theme: Theme) {
 		}
 	}
 
-	status := app.status
-	if app.dirty && !app.confirm_pending {
-		status = "Unsaved changes"
-	}
 	rl.DrawRectangle(0, c.int(screen_h - 52), c.int(screen_w), 52, rl.ColorAlpha(theme.background, 0.92))
 	rl.DrawRectangle(0, c.int(screen_h - 52), c.int(screen_w), 52, rl.ColorAlpha(rl.BLACK, 0.14))
-	rl.DrawTextEx(app.fonts.ui, status, rl.Vector2{24, f32(screen_h - 38)}, 18, 1, theme.foreground)
+	bar_y := f32(screen_h - 38)
 
+	// Left: file name, with a bullet when there are unsaved changes.
+	name: cstring = "New document"
+	if len(app.file_path) > 0 {
+		name = fmt.ctprintf("%s", filepath.base(app.file_path))
+	}
+	left_text := fmt.ctprintf("%s •", name) if app.dirty else name
+	rl.DrawTextEx(app.fonts.ui, left_text, rl.Vector2{24, bar_y}, 18, 1, theme.foreground)
+
+	// Center: confirm prompt, else a fresh transient message, else the palette hint.
+	center: cstring = "Press Ctrl+P to open the Command Palette"
+	center_color := theme.muted
+	if app.confirm_pending {
+		center = app.status
+		center_color = theme.foreground
+	} else if rl.GetTime() - app.status_time < 2.5 {
+		center = app.status
+		center_color = theme.foreground
+	}
+	center_w := rl.MeasureTextEx(app.fonts.ui, center, 18, 1)
+	rl.DrawTextEx(app.fonts.ui, center, rl.Vector2{(f32(screen_w) - center_w.x) * 0.5, bar_y}, 18, 1, center_color)
+
+	// Right: current page and totals.
 	words := count_words(app)
-	// Layout pages when page view is on, the word estimate otherwise.
 	pages := page_count if page_count > 0 else (words + 249) / 250
-	count_text := fmt.ctprintf("%d words / %d pages", words, pages)
+	count_text := fmt.ctprintf("Page %d · %d words / %d pages", current_page(app), words, pages)
 	count_w := rl.MeasureTextEx(app.fonts.ui, count_text, 18, 1)
-	rl.DrawTextEx(app.fonts.ui, count_text, rl.Vector2{f32(screen_w) - count_w.x - 24, f32(screen_h - 38)}, 18, 1, theme.foreground)
+	rl.DrawTextEx(app.fonts.ui, count_text, rl.Vector2{f32(screen_w) - count_w.x - 24, bar_y}, 18, 1, theme.foreground)
 }
 
 // Maps a screen point to a text index by replaying the same wrapping as draw_paragraph.
@@ -2186,8 +2574,8 @@ min_raggedness_breaks :: proc(word_start_prefix, word_end_prefix: []f32, full_av
 
 // Char indices where each visual line of the paragraph begins (first element is
 // always `start`), laid out with min_raggedness_breaks. Recomputed per call.
-// ponytail: O(words) per call, re-run every frame for every paragraph; cache per
-// paragraph keyed on text+width if large documents ever lag.
+// This is O(words) per call and runs every frame for every paragraph. If large
+// documents ever lag, cache the result per paragraph keyed on text and width.
 paragraph_line_starts :: proc(app: ^App, start, end: int, width, indent, font_size: f32) -> []int {
 	result := make([dynamic]int, context.temp_allocator)
 	append(&result, start)
@@ -2341,6 +2729,8 @@ draw_visual_line :: proc(app: ^App, theme: Theme, paragraph: Paragraph, start, e
 
 	// Draw glyphs; underline as continuous runs so there are no gaps between letters.
 	ul_x0: f32 = -1
+	st_x0: f32 = -1
+	strike_y := y + font_size * 0.5
 	for i in start..<end {
 		style := app.styles[i]
 		ch := app.text[i]
@@ -2354,6 +2744,14 @@ draw_visual_line :: proc(app: ^App, theme: Theme, paragraph: Paragraph, start, e
 			rl.DrawLineEx(rl.Vector2{ul_x0, y + font_size + 4}, rl.Vector2{x, y + font_size + 4}, 1.5, theme.foreground)
 			ul_x0 = -1
 		}
+		if style.strike {
+			if st_x0 < 0 {
+				st_x0 = x
+			}
+		} else if st_x0 >= 0 {
+			rl.DrawLineEx(rl.Vector2{st_x0, strike_y}, rl.Vector2{x, strike_y}, 1.5, theme.foreground)
+			st_x0 = -1
+		}
 		x += w + 2
 		if ch == ' ' && i < content_end {
 			x += extra_space
@@ -2364,6 +2762,9 @@ draw_visual_line :: proc(app: ^App, theme: Theme, paragraph: Paragraph, start, e
 	}
 	if ul_x0 >= 0 {
 		rl.DrawLineEx(rl.Vector2{ul_x0, y + font_size + 4}, rl.Vector2{x, y + font_size + 4}, 1.5, theme.foreground)
+	}
+	if st_x0 >= 0 {
+		rl.DrawLineEx(rl.Vector2{st_x0, strike_y}, rl.Vector2{x, strike_y}, 1.5, theme.foreground)
 	}
 }
 
@@ -2535,6 +2936,8 @@ draw_path_prompt :: proc(app: ^App, theme: Theme) {
 		title = "Open..."
 	} else if app.path_action == .Find {
 		title = "Find (Enter jumps to the next match)"
+	} else if app.path_action == .Export {
+		title = export_title(app.export_format)
 	}
 
 	sb := strings.builder_make()
