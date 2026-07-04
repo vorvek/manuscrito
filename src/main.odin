@@ -62,6 +62,7 @@ Command_Kind :: enum int {
 	Header_2,
 	Header_3,
 	Header_4,
+	Size_Paragraph,
 	Align_Left,
 	Align_Center,
 	Align_Right,
@@ -215,10 +216,11 @@ COMMANDS := [?]Command {
 	{"Italics", .Italic},
 	{"Underline", .Underline},
 	{"Highlight", .Highlight},
-	{"Header 1", .Header_1},
-	{"Header 2", .Header_2},
-	{"Header 3", .Header_3},
-	{"Header 4", .Header_4},
+	{"Size: Heading 1", .Header_1},
+	{"Size: Heading 2", .Header_2},
+	{"Size: Heading 3", .Header_3},
+	{"Size: Heading 4", .Header_4},
+	{"Size: Paragraph", .Size_Paragraph},
 	{"Align Left", .Align_Left},
 	{"Align Center", .Align_Center},
 	{"Align Right", .Align_Right},
@@ -744,7 +746,7 @@ execute_command :: proc(app: ^App, kind: Command_Kind) {
 		record_recent(app, kind)
 	}
 	#partial switch kind {
-	case .Cut, .Paste, .Bold, .Italic, .Underline, .Highlight, .Header_1 ..= .Header_4, .Align_Left ..= .Align_Justify, .First_Line_Indent:
+	case .Cut, .Paste, .Bold, .Italic, .Underline, .Highlight, .Header_1 ..= .Size_Paragraph, .Align_Left ..= .Align_Justify, .First_Line_Indent:
 		begin_edit(app, .Other)
 	}
 	switch kind {
@@ -817,6 +819,9 @@ execute_command :: proc(app: ^App, kind: Command_Kind) {
 		app.palette_open = false
 	case .Header_4:
 		apply_header(app, 4)
+		app.palette_open = false
+	case .Size_Paragraph:
+		apply_header(app, 0)
 		app.palette_open = false
 	case .Align_Left:
 		apply_align(app, .Left)
@@ -1299,17 +1304,8 @@ set_style_field :: proc(style: ^Char_Style, field: Style_Field, value: bool) {
 
 apply_header :: proc(app: ^App, level: int) {
 	first, last := selected_paragraphs(app)
-	// Applying the same level again returns the paragraphs to normal text.
-	all := true
 	for p in first..=last {
-		if app.paragraphs[p].header != level {
-			all = false
-			break
-		}
-	}
-	target := 0 if all else level
-	for p in first..=last {
-		app.paragraphs[p].header = target
+		app.paragraphs[p].header = level
 	}
 	app.dirty = true
 }
