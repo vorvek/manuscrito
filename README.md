@@ -42,4 +42,4 @@ All commands are also available from the palette, including headers, alignment, 
 
 ## License
 
-GPL-3.0-only. See `LICENSE`.
+GPL-3.0-only. See [`LICENSE`](https://github.com/vorvek/manuscrito/blob/main/LICENSE).
