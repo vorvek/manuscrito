@@ -36,6 +36,7 @@ Path_Action :: enum int {
 	Save_As,
 	Open,
 	Find,
+	Export,
 }
 
 Palette_Mode :: enum int {
@@ -84,6 +85,11 @@ Command_Kind :: enum int {
 	Keep_Cursor_Centered,
 	Page_View,
 	Theme_Cycle,
+	Export_Txt,
+	Export_Rtf,
+	Export_Doc,
+	Export_Md,
+	Export_Html,
 	Quit,
 }
 
@@ -174,6 +180,7 @@ App :: struct {
 	recent:           [dynamic]Command_Kind,
 	selected_command: int,
 	path_action:      Path_Action,
+	export_format:    Export_Format,
 	path_input:       [dynamic]rune,
 	file_path:        string,
 	theme_index:      int,
@@ -274,6 +281,11 @@ COMMANDS := [?]Command {
 	{"Keep Cursor Centered Vertically", .Keep_Cursor_Centered},
 	{"Page View", .Page_View},
 	{"Theme: Next", .Theme_Cycle},
+	{"Export as TXT", .Export_Txt},
+	{"Export as RTF", .Export_Rtf},
+	{"Export as DOC", .Export_Doc},
+	{"Export as Markdown", .Export_Md},
+	{"Export as HTML", .Export_Html},
 	{"Quit", .Quit},
 }
 
@@ -781,6 +793,8 @@ update_path_prompt :: proc(app: ^App) {
 				// The prompt stays open so Enter jumps to the next match.
 				find_next(app, path)
 				return
+			case .Export:
+				export_document(app, path)
 			case .None:
 			case:
 			}
@@ -931,8 +945,61 @@ execute_command :: proc(app: ^App, kind: Command_Kind) {
 		set_status(app, THEMES[app.theme_index].name)
 		save_settings(app)
 		// palette stays open so repeated Enter browses every theme
+	case .Export_Txt:
+		begin_export(app, .Txt)
+	case .Export_Rtf:
+		begin_export(app, .Rtf)
+	case .Export_Doc:
+		begin_export(app, .Doc)
+	case .Export_Md:
+		begin_export(app, .Md)
+	case .Export_Html:
+		begin_export(app, .Html)
 	case .Quit:
 		app.quit = true
+	}
+}
+
+begin_export :: proc(app: ^App, format: Export_Format) {
+	app.export_format = format
+	begin_path_prompt(app, .Export)
+}
+
+export_extension :: proc(format: Export_Format) -> string {
+	switch format {
+	case .Txt:  return ".txt"
+	case .Rtf:  return ".rtf"
+	case .Doc:  return ".doc"
+	case .Md:   return ".md"
+	case .Html: return ".html"
+	}
+	return ".txt"
+}
+
+export_title :: proc(format: Export_Format) -> cstring {
+	switch format {
+	case .Txt:  return "Export as TXT"
+	case .Rtf:  return "Export as RTF"
+	case .Doc:  return "Export as DOC"
+	case .Md:   return "Export as Markdown"
+	case .Html: return "Export as HTML"
+	}
+	return "Export"
+}
+
+prefill_export_path :: proc(app: ^App) {
+	base := "document"
+	if len(app.file_path) > 0 {
+		stem := filepath.stem(app.file_path)
+		if len(stem) > 0 {
+			base = stem
+		}
+	}
+	for ch in base {
+		append(&app.path_input, ch)
+	}
+	for ch in export_extension(app.export_format) {
+		append(&app.path_input, ch)
 	}
 }
 
@@ -942,6 +1009,9 @@ begin_path_prompt :: proc(app: ^App, action: Path_Action) {
 		for ch in app.file_path {
 			append(&app.path_input, ch)
 		}
+	}
+	if action == .Export {
+		prefill_export_path(app)
 	}
 	app.path_action = action
 	app.palette_open = true
@@ -1711,6 +1781,26 @@ save_document :: proc(app: ^App, path: string) {
 		set_status(app, "Saved")
 	} else {
 		set_status(app, "Save failed")
+	}
+}
+
+export_document :: proc(app: ^App, path: string) {
+	sb := strings.builder_make()
+	defer strings.builder_destroy(&sb)
+	switch app.export_format {
+	case .Txt:
+		export_txt(app, &sb)
+	case .Rtf, .Doc:
+		export_rtf(app, &sb)
+	case .Md:
+		export_md(app, &sb)
+	case .Html:
+		export_html(app, &sb)
+	}
+	if os.write_entire_file(path, strings.to_string(sb)) == nil {
+		set_status(app, "Exported")
+	} else {
+		set_status(app, "Export failed")
 	}
 }
 
@@ -2835,6 +2925,8 @@ draw_path_prompt :: proc(app: ^App, theme: Theme) {
 		title = "Open..."
 	} else if app.path_action == .Find {
 		title = "Find (Enter jumps to the next match)"
+	} else if app.path_action == .Export {
+		title = export_title(app.export_format)
 	}
 
 	sb := strings.builder_make()
