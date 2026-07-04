@@ -1954,6 +1954,9 @@ draw_document :: proc(app: ^App, theme: Theme) {
 				continue
 			}
 			rl.DrawRectangle(c.int(max(page_x, 0)), c.int(ry), c.int(content_w + page_pad * 2), c.int(page_h + pad * 2), theme.page)
+			num := fmt.ctprintf("%d", k + 1)
+			num_w := rl.MeasureTextEx(app.fonts.ui, num, 16, 1)
+			rl.DrawTextEx(app.fonts.ui, num, rl.Vector2{page_x + content_w + page_pad * 2 - num_w.x - 14, ry + page_h + pad * 2 - 30}, 16, 1, theme.muted)
 		}
 	} else {
 		rl.DrawRectangle(c.int(max(page_x, 0)), 0, c.int(content_w + page_pad * 2), c.int(screen_h), theme.page)
