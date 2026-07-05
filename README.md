@@ -10,10 +10,14 @@ Distraction-free full screen writing app for Windows, Linux, and macOS, built wi
 ## Build
 
 ```sh
-odin build src -out:build/manuscrito
+# Windows
+.\build.ps1
+
+# Linux/macOS
+./build.sh
 ```
 
-Windows users can run `.\build.ps1`; Linux/macOS users can run `./build.sh`.
+The scripts compile the bundled tinyfiledialogs C source before building the Odin app.
 
 ## Controls
 

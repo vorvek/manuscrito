@@ -13,7 +13,7 @@ import "core:strings"
 import "core:unicode"
 import "core:unicode/utf8"
 
-VERSION :: "1.0.3"
+VERSION :: "1.0.4"
 MAGIC :: "MANUSCRITO\t1"
 // Text lines per page in page view. With the 60-char column this lands near
 // 250 words, the usual novel manuscript page.
@@ -839,15 +839,15 @@ execute_command :: proc(app: ^App, kind: Command_Kind) {
 	switch kind {
 	case .Save:
 		if len(app.file_path) == 0 {
-			begin_path_prompt(app, .Save_As)
+			save_document_as(app)
 		} else {
 			save_document(app, app.file_path)
 			app.palette_open = false
 		}
 	case .Save_As:
-		begin_path_prompt(app, .Save_As)
+		save_document_as(app)
 	case .Open:
-		begin_path_prompt(app, .Open)
+		open_document_with_picker(app)
 	case .New:
 		clear_document(app)
 		clear_snapshots(&app.undo)
@@ -965,7 +965,30 @@ execute_command :: proc(app: ^App, kind: Command_Kind) {
 
 begin_export :: proc(app: ^App, format: Export_Format) {
 	app.export_format = format
-	begin_path_prompt(app, .Export)
+	path, ok := native_export_path(format)
+	if ok {
+		defer delete(path)
+		export_document(app, path)
+	}
+	app.palette_open = false
+}
+
+save_document_as :: proc(app: ^App) {
+	path, ok := native_save_path()
+	if ok {
+		defer delete(path)
+		save_document(app, path)
+	}
+	app.palette_open = false
+}
+
+open_document_with_picker :: proc(app: ^App) {
+	path, ok := native_open_path()
+	if ok {
+		defer delete(path)
+		open_document(app, path)
+	}
+	app.palette_open = false
 }
 
 export_extension :: proc(format: Export_Format) -> string {

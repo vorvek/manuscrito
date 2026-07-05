@@ -29,11 +29,12 @@ jobs:
 
       - name: Build (Windows)
         if: runner.os == 'Windows'
-        run: odin build src -out:manuscrito.exe -subsystem:windows -o:speed
+        shell: pwsh
+        run: ./build.ps1
 
       - name: Build (Unix)
         if: runner.os != 'Windows'
-        run: odin build src -out:manuscrito -o:speed
+        run: ./build.sh
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -42,7 +43,7 @@ jobs:
           $ver = "${{ github.ref_name }}" -replace '^v', ''
           $stage = "manuscrito-$ver-${{ matrix.target }}"
           New-Item -ItemType Directory -Force dist, $stage | Out-Null
-          Copy-Item manuscrito.exe, LICENSE, README.md $stage
+          Copy-Item build/manuscrito.exe, LICENSE, README.md $stage
           Compress-Archive -Path $stage -DestinationPath "dist/$stage.zip"
 
       - name: Package (Unix)
@@ -51,7 +52,7 @@ jobs:
           ver="${GITHUB_REF_NAME#v}"
           stage="manuscrito-$ver-${{ matrix.target }}"
           mkdir -p dist "$stage"
-          cp manuscrito LICENSE README.md "$stage"/
+          cp build/manuscrito LICENSE README.md "$stage"/
           chmod +x "$stage/manuscrito"
           tar -czf "dist/$stage.tar.gz" "$stage"
 
@@ -71,5 +72,5 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           name: ${{ github.ref_name }}
-          body: Initial release
+          body: "- Improved file dialog windows using [TinyFileDialogs](https://sourceforge.net/projects/tinyfiledialogs/)"
           files: dist/*
